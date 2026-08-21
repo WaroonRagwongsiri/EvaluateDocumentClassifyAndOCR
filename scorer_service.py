@@ -18,20 +18,37 @@ Protocol (one JSON per line):
 
 MUST be launched with CUDA_VISIBLE_DEVICES=4 (GPU 4 reserved for this service).
 
+Configuration comes from the project-root .env (same file/pattern as
+eval/config.py — python-dotenv, env vars win over .env), with CLI flags as
+overrides:
+
+  QUALITY_MODEL     path to the model dir (default: the downloaded
+                    mapo80/DeQA-Doc-Overall under QualityScore/models/)
+  QUALITY_DEVICE    torch device (default cuda:0; combine with
+                    CUDA_VISIBLE_DEVICES to pick the physical GPU)
+
 Usage:
-  CUDA_VISIBLE_DEVICES=4 .venv/bin/python scorer_service.py --model <model dir>
+  CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+_ROOT = Path(__file__).resolve().parent
+load_dotenv(_ROOT / ".env")
+
+_DEFAULT_MODEL = _ROOT / "QualityScore" / "models" / "models" / "mapo80--DeQA-Doc-Overall"
+
 # src.* imports (repo layout) — resolve relative to this file, not CWD.
 # The DeQA-Score code lives under QualityScore/ (a git submodule).
-sys.path.insert(0, str(Path(__file__).resolve().parent / "QualityScore" / "DeQA-Score"))
+sys.path.insert(0, str(_ROOT / "QualityScore" / "DeQA-Score"))
 
 LEVEL_NAMES = ("excellent", "good", "fair", "poor", "bad")
 WEIGHTS = (5.0, 4.0, 3.0, 2.0, 1.0)
@@ -47,11 +64,17 @@ def level_for(score: float) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True,
-                    help="DeQA-Doc full model dir (merged weights)")
+    model_env = os.environ.get("QUALITY_MODEL")
+    # relative QUALITY_MODEL paths are resolved against the project root, so
+    # the service can be launched from any CWD
+    model_default = str(_ROOT / model_env if model_env else _DEFAULT_MODEL)
+    ap.add_argument("--model", default=model_default,
+                    help="DeQA-Doc full model dir (merged weights); "
+                         "env QUALITY_MODEL, default the mapo80/DeQA-Doc-Overall download")
     ap.add_argument("--model-base", default=None,
                     help="unused for merged checkpoints; kept for LoRA dirs")
-    ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--device", default=os.environ.get("QUALITY_DEVICE", "cuda:0"),
+                    help="torch device; env QUALITY_DEVICE")
     args = ap.parse_args()
 
     import torch

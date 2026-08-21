@@ -83,9 +83,11 @@ weights, no LoRA), on GPU 4. The service script lives at the repo root
 ```bash
 tmux new-session -s quality_score
 # inside the session, from the repo root:
-CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py \
-  --model QualityScore/models/models/mapo80--DeQA-Doc-Overall
+CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py
 ```
+
+The model dir and torch device are configurable in `.env` (`QUALITY_MODEL`,
+`QUALITY_DEVICE`) — no CLI flags needed for the default setup.
 ```bash
 tmux attach -t quality_score     # attach to watch the JSONL protocol
 ```

@@ -1204,14 +1204,26 @@ class Handler(BaseHTTPRequestHandler):
         else:
             # No extract pages for this context: either the declared type has no
             # production extractor (no-extractor context — file_extracts has no
-            # rows for it), or the file isn't renderable (page_count=0). Nothing
-            # to show here without a page/extract.
-            page_sections = ("<div class='doc-section review-card'>"
-                             "<div class='doc-section-h'>No extract pages</div>"
-                             "<div class='page-body'>"
-                             "<p class='small'>no extract pages for this context "
-                             "(no extractor for this declared type, or content not renderable).</p>"
-                             "</div></div>")
+            # rows for it), or the file isn't renderable (page_count=0). When
+            # the file IS renderable, still show a preview-only card per page
+            # (image, no verdict forms — there is no extract to grade); only
+            # truly non-renderable files get the bare note.
+            if kind in ("pdf", "image") and pgs:
+                page_sections = "".join(
+                    f"<div class='doc-section review-card'>"
+                    f"<div class='doc-section-h'>Page {n} "
+                    f"<span class='small dim'>(preview only — no extractor for this declared type)</span></div>"
+                    f"<div class='page-body'><div class='page-img'>"
+                    f"<img src='/page/{quote(sha)}/{n}' class='zoomable' data-page='{n}' alt='page {n}'>"
+                    f"</div></div></div>"
+                    for n in range(1, pgs + 1))
+            else:
+                page_sections = ("<div class='doc-section review-card'>"
+                                 "<div class='doc-section-h'>No extract pages</div>"
+                                 "<div class='page-body'>"
+                                 "<p class='small'>no extract pages for this context "
+                                 "(no extractor for this declared type, or content not renderable).</p>"
+                                 "</div></div>")
 
         # Every petition context this file appears in, with the full txn_id for each
         # (the main thing the user needs to identify the source petition). The txn_id

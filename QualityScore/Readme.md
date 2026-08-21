@@ -21,9 +21,10 @@ it — no adapter/base combination needed.)
 
 Run from the outer repo root:
 ```bash
-CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py \
-  --model QualityScore/models/models/mapo80--DeQA-Doc-Overall
+CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py
 ```
+The model dir and torch device come from the outer `.env` (`QUALITY_MODEL`,
+`QUALITY_DEVICE`), overridable via the `--model` / `--device` CLI flags.
 
 ---
 
