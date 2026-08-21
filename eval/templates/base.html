@@ -1,0 +1,586 @@
+<html lang="th"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+:root{
+  /* ── Wireframe palette: white paper, black ink, black borders. ──
+     Token NAMES are kept stable so the Python fragment class references
+     still resolve; only the VALUES move to the high-contrast B/W set. */
+  --bg:#fff; --paper:#fff; --panel:#fff; --ink:#000; --ink-2:#000;
+  --muted:#444; --faint:#8a8a8a; --rule:#000; --rule-strong:#000;
+  /* accent is black; --accent-soft is the hover/focus wash; used sparingly */
+  --accent:#000; --accent-2:#000; --accent-soft:#f0f0f0; --accent-line:#000;
+  --steel:#444;
+  /* AI status (machine state) — DOT family. done=green, pending=muted,
+     none=muted, skipped=faint, error=amber. Kept calm + readable. */
+  --st-done:#2f7d4f; --st-pending:#8a8a8a; --st-none:#8a8a8a; --st-skipped:#cfcfcf; --st-error:#b35a14;
+  /* Human verdict — FILLED PILL family. Semantic green/red/amber. */
+  --vd-correct:#2f7d4f; --vd-wrong:#c0392b; --vd-acceptable:#c98a1e;
+  /* special */
+  --oov:#5a4a8a; --found:#2f7d4f; --missing:#c0392b;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{font-family:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;margin:0;background:var(--bg);color:var(--ink);line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{position:relative;max-width:1240px;margin:0 auto;padding:28px 60px 80px}
+
+/* ── Top bar (full-width bordered): app title left, MODEL NAME right. ── */
+header{position:relative;background:var(--paper);border:1px solid var(--rule-strong);border-left:none;border-right:none;padding:15px 60px;display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+header .app-title{font-weight:600;font-size:24px;letter-spacing:-.3px;line-height:1.1;color:var(--ink)}
+header .mname{display:none}  /* legacy broadsheet masthead name — unused under wireframe shell */
+header .mfolio{display:none}
+header .model-name{font-size:14px;letter-spacing:.6px;color:var(--muted);font-weight:500;text-transform:uppercase;margin-left:auto}
+header nav{display:flex;gap:18px;align-items:center;flex-wrap:wrap}
+header nav a{color:var(--ink);text-decoration:none;font-size:14px;font-weight:500;border:1px solid transparent;padding:3px 10px;transition:background .12s,border-color .12s}
+header nav a:hover{background:var(--accent-soft)}
+header nav a.active{border-color:var(--rule-strong);font-weight:600}
+header .spacer{flex:1}
+header .runstate{font-size:11px;letter-spacing:.4px;color:var(--faint);text-transform:uppercase}
+
+/* ── Headings — flat Inter, big type. h2 = page heading (48px), h3 = section/label (24px). ── */
+h2{font-weight:700;font-size:48px;letter-spacing:-1px;margin:0 0 20px;color:var(--ink);line-height:1.1}
+h3{font-weight:600;font-size:24px;margin:0 0 14px;color:var(--ink);letter-spacing:-.3px}
+/* plain section label — a smaller muted caption used above stat strips etc. */
+.smallcaps{font-size:13px;color:var(--muted);font-weight:500;text-transform:uppercase;letter-spacing:1px}
+.panel{background:var(--panel);border:2px solid var(--rule-strong);padding:20px 22px;margin-bottom:20px}
+
+/* section rules (kept as utility classes; square black hairlines) */
+.rule{border:0;border-top:2px solid var(--rule-strong);margin:0}
+.rule-thin{border:0;border-top:1px solid var(--muted);margin:0}
+.rule-double{border:0;border-top:4px solid var(--rule-strong);margin:0}
+
+/* tables — square corners, black header underline, 24px-ish labels */
+table{border-collapse:collapse;width:100%;font-size:14px;background:var(--panel);font-variant-numeric:tabular-nums}
+th,td{border-bottom:1px solid var(--muted);padding:10px 12px;text-align:left;vertical-align:top}
+th{font-weight:600;color:var(--ink);text-transform:uppercase;letter-spacing:.8px;font-size:12px;border-bottom:2px solid var(--rule-strong)}
+tr:hover td{background:var(--accent-soft)}
+
+/* monospace code for ids (system mono stack — no extra font load) */
+code,.mono{font-family:ui-monospace,'SF Mono',SFMono,Menlo,Consolas,'Liberation Mono',monospace}
+code{background:var(--accent-soft);border:1px solid var(--muted);padding:0 5px;color:var(--ink);font-size:12px;word-break:break-all}
+td.pid{font-size:12px;line-height:1.6}
+td.pid .ln{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.cp{border:1px solid var(--rule-strong);background:var(--paper);padding:0 6px;cursor:pointer;font-size:11px;line-height:1.6;color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace;transition:all .12s}
+.cp:hover{background:var(--ink);border-color:var(--ink);color:#fff}
+.cp.done{background:var(--st-done);border-color:var(--st-done);color:#fff}
+
+/* ── AI/machine status: DOT family (small filled dot + label). ── */
+.dot{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ink-2);white-space:nowrap;line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.2px;text-transform:lowercase}
+.dot::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--st-pending);flex:none}
+.dot.done::before,.dot-dot-done::before{background:var(--st-done)}
+.dot.pending::before,.dot-dot-pending::before{background:var(--st-pending)}
+.dot.none::before,.dot-dot-none::before{background:var(--st-none)}
+.dot.skipped::before,.dot-dot-skipped::before{background:var(--st-skipped);border-radius:2px}
+.dot.error::before,.dot-dot-error::before{background:var(--st-error)}
+.dot.no-ai::before{background:var(--st-none)}
+
+/* ── Human verdict: VPILL family (filled pill, icon-led). Semantic green/red/amber. ── */
+.vpill{display:inline-block;border:1px solid var(--rule-strong);padding:2px 9px;font-size:11px;font-weight:700;color:#fff;line-height:1.6;white-space:nowrap;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3px;text-transform:uppercase}
+.vpill.vpill-correct{background:var(--vd-correct);border-color:var(--vd-correct)}
+.vpill.vpill-wrong{background:var(--vd-wrong);border-color:var(--vd-wrong)}
+.vpill.vpill-acceptable{background:var(--vd-acceptable);border-color:var(--vd-acceptable)}
+
+/* ── Legend: decodes both families on one line. ── */
+.legend{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;font-size:12px;color:var(--muted);padding:12px 16px;background:var(--paper);border:1px solid var(--rule-strong);margin:6px 0 16px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.legend .lg-sep{color:var(--rule-strong);font-weight:700}
+.legend .lg-label{color:var(--ink);font-weight:700;margin-right:-10px;text-transform:uppercase;letter-spacing:1px;font-size:11px}
+.legend .dot,.legend .vpill{font-size:11px}
+
+/* ── Hero stat strip (dashboard): KPI cards as a columnar ledger. ── */
+.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:0;margin:8px 0 18px;border:2px solid var(--rule-strong);background:var(--paper)}
+.stat{background:transparent;border:none;border-right:2px solid var(--rule-strong);padding:20px 22px;display:flex;flex-direction:column;gap:3px;text-decoration:none;color:var(--ink);position:relative;transition:background .15s}
+.stat:last-child{border-right:none}
+.stat:nth-child(5n){border-right:none}
+@media (max-width:900px){.stats{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}.stat:nth-child(5n){border-right:2px solid var(--rule-strong)}.stat:last-child{border-right:none}}
+a.stat:hover{background:var(--accent-soft)}
+.stat .stat-num{font-weight:700;font-size:40px;color:var(--ink);line-height:1;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+.stat .stat-num .pct{font-size:22px;color:var(--muted);font-weight:500;margin-left:1px}
+.stat .stat-label{font-size:12px;font-weight:600;color:var(--ink);text-transform:uppercase;letter-spacing:1px;margin-top:6px}
+.stat .stat-sub{font-size:12px;color:var(--muted);margin-top:4px}
+.stat .stat-count{font-size:19px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;letter-spacing:.2px;margin-top:8px;line-height:1.1}
+.stat .stat-count .of{color:var(--muted);font-weight:500;margin:0 2px}
+.stat .bar{margin-top:10px;height:6px;background:var(--accent-soft);overflow:hidden;border:none}
+.stat .bar .seg{height:100%}
+.stat .stat-warn{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:40px;color:var(--ink);line-height:1;letter-spacing:-1px;font-variant-numeric:tabular-nums}
+.stat .stat-warn::before{content:"";width:12px;height:12px;border-radius:50%;background:var(--st-error)}
+.stat .stat-needs{display:inline-flex;align-items:center;gap:6px}
+.stat .stat-needs::before{content:"";width:11px;height:11px;border-radius:50%;background:var(--vd-acceptable)}
+
+/* ── Figma-style score chunks: Classify + OCR/ADE accuracy as separate ──
+   bordered panels, each a row of circular metric rings (one per verdict
+   value) with a Total line below. Matches the dashboard's black-on-white,
+   2px-rule design language. Rings are pure CSS conic-gradients (no JS). */
+.score-chunks{display:grid;grid-template-columns:repeat(2,1fr);gap:0;margin:0 0 22px;border:2px solid var(--rule-strong);background:var(--paper)}
+.score-chunk{padding:22px 26px;border-right:2px solid var(--rule-strong)}
+.score-chunk:last-child{border-right:none}
+.score-chunk .score-head{font-weight:700;font-size:20px;letter-spacing:-.3px;color:var(--ink);line-height:1.2}
+.score-chunk .score-sub{font-size:12px;color:var(--muted);margin:3px 0 16px}
+.rings{display:flex;justify-content:center;align-items:flex-start;gap:36px;flex-wrap:wrap}
+.rings-3{gap:28px}
+.ring{display:flex;flex-direction:column;align-items:center;gap:9px}
+/* rings are clickable (drill-down to the matching page-verdict list) */
+a.ring{text-decoration:none;color:var(--ink);cursor:pointer;transition:opacity .12s}
+a.ring:hover{opacity:.75}
+.ring-disc{
+  width:96px;height:96px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:26px;color:var(--c,#000);line-height:1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;
+  background:
+    radial-gradient(closest-side,var(--paper) 62%, transparent 63%),
+    conic-gradient(var(--c,#000) calc(var(--p,0) * 1%), var(--accent-soft) 0);
+  border:2px solid var(--rule-strong)
+}
+/* solid disc variant (for the 'wrong' ring, which has no share-of-total arc —
+   it just shows the raw count on a flat color disc). */
+.ring-disc.ring-disc-solid{
+  background:var(--c,#000);color:#fff;border-color:var(--c,#000)
+}
+.ring-cap{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}
+.ring-cap-correct{color:var(--vd-correct)}
+.ring-cap-acceptable{color:var(--vd-acceptable)}
+.ring-cap-wrong{color:var(--vd-wrong)}
+.score-total{margin-top:16px;text-align:center;font-size:13px;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+/* Classify score chunk heading links to /classify-score (confusion matrix) —
+   can't wrap the whole chunk because the rings inside are already links */
+.score-head-link{color:inherit;text-decoration:underline;text-underline-offset:3px}
+.score-head-link:hover{background:var(--accent-soft)}
+/* ── /classify-score confusion matrix ── */
+.cm-wrap{overflow-x:auto;border:2px solid var(--rule-strong);background:var(--paper);margin:0 0 14px}
+.cm-table{min-width:max-content;border-collapse:collapse;font-size:12px;width:max-content}
+.cm-table th,.cm-table td{border:1px solid var(--muted);padding:5px 9px;text-align:center;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cm-table th{background:var(--paper)}
+.cm-table .cm-corner{text-align:left;font-weight:600}
+.cm-table .cm-row{position:sticky;left:0;background:var(--paper);text-align:left;z-index:1;font-weight:600}
+.cm-table .cm-col{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+.cm-table .cm-zero{color:var(--faint)}
+.cm-table .cm-hit,.cm-table .cm-miss{font-weight:700}
+.cm-table .cm-total{font-weight:600;background:var(--accent-soft)}
+.cm-table tr.cm-foot td,.cm-table tr.cm-foot th{border-top:2px solid var(--rule-strong)}
+/* corrected-type select inside the doctype verdict form (compact inline row) */
+.doctype-verdict-form .corrected-row{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--muted)}
+.doctype-verdict-form .corrected-row select{font-size:12px;padding:4px 7px}
+/* ── DeQA-Doc page-quality pill (review page card headers) ── */
+.qpill{display:inline-block;border:1px solid var(--rule-strong);padding:1px 8px;font-size:11px;font-weight:700;white-space:nowrap;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3px;text-transform:uppercase}
+.qpill.q-excellent{background:var(--vd-correct);color:#fff;border-color:var(--vd-correct)}
+.qpill.q-good{background:rgba(47,125,79,.18);color:var(--vd-correct);border-color:var(--vd-correct)}
+.qpill.q-fair{background:rgba(201,138,30,.18);color:var(--vd-acceptable);border-color:var(--vd-acceptable)}
+.qpill.q-poor{background:rgba(192,57,43,.16);color:var(--vd-wrong);border-color:var(--vd-wrong)}
+.qpill.q-bad{background:var(--vd-wrong);color:#fff;border-color:var(--vd-wrong)}
+.qpill.q-pending{background:var(--accent-soft);color:var(--faint)}
+@media (max-width:820px){
+  .score-chunks{grid-template-columns:1fr}
+  .score-chunk{border-right:none;border-bottom:2px solid var(--rule-strong)}
+  .score-chunk:last-child{border-bottom:none}
+}
+
+/* ── Segmented horizontal bar (status breakdown + per-card progress). ── */
+.bar{display:flex;height:14px;overflow:hidden;background:var(--accent-soft);border:2px solid var(--rule-strong)}
+.bar .seg{height:100%;min-width:0}
+.bar .seg.seg-done{background:var(--st-done)}
+.bar .seg.seg-pending{background:var(--st-pending)}
+.bar .seg.seg-none{background:var(--st-none)}
+.bar .seg.seg-skipped{background:var(--st-skipped)}
+.bar .seg.seg-error{background:var(--st-error)}
+.stat-list{list-style:none;margin:10px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.stat-list li{display:flex;align-items:center;gap:7px;color:var(--muted)}
+.stat-list li::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--st-none)}
+.stat-list li.s-done::before{background:var(--st-done)}
+.stat-list li.s-pending::before{background:var(--st-pending)}
+.stat-list li.s-none::before{background:var(--st-none)}
+.stat-list li.s-skipped::before{background:var(--st-skipped);border-radius:2px}
+.stat-list li.s-error::before{background:var(--st-error)}
+.stat-list li b{color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ── Worker-state dot (dashboard + worker-log). ── */
+.wdot{display:inline-flex;align-items:center;gap:7px;font-weight:600;font-size:11px;color:var(--ink);padding:4px 11px;background:var(--paper);border:1px solid var(--rule-strong);font-family:ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase;letter-spacing:1px}
+.wdot::before{content:"";width:10px;height:10px;border-radius:50%;flex:none}
+.wdot.wdot-running{color:var(--vd-correct);border-color:var(--vd-correct)}
+.wdot.wdot-running::before{background:var(--vd-correct)}
+.wdot.wdot-idle{color:var(--muted)}
+.wdot.wdot-idle::before{background:var(--st-none)}
+.wdot.wdot-stopping{color:var(--vd-acceptable);border-color:var(--vd-acceptable)}
+.wdot.wdot-stopping::before{background:var(--vd-acceptable)}
+
+/* ── Petition card grid (dashboard + landing). ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:0;border-top:2px solid var(--rule-strong);border-left:2px solid var(--rule-strong)}
+.card{display:flex;flex-direction:column;gap:8px;background:var(--paper);border:none;border-right:2px solid var(--rule-strong);border-bottom:2px solid var(--rule-strong);padding:16px 17px;text-decoration:none;color:var(--ink);position:relative;transition:background .15s}
+.card:hover{background:var(--accent-soft)}
+.card:hover .card-title{text-decoration:underline}
+.card .card-title{font-weight:600;font-size:16px;color:var(--ink);line-height:1.25}
+.card .card-sub{font-size:12px;color:var(--muted);line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace}
+.card .card-bar{height:5px;overflow:hidden;background:var(--accent-soft);display:flex;border:none}
+.card .card-bar .seg{height:100%}
+.card .card-badges{display:flex;flex-wrap:wrap;gap:5px;margin-top:2px}
+
+/* legacy pill badges — token-aligned, square, black-bordered. */
+.pill{display:inline-block;border:1px solid var(--rule-strong);padding:2px 9px;font-size:11px;font-weight:600;white-space:nowrap;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3px;text-transform:uppercase}
+.pill-done{background:rgba(47,125,79,.14);border-color:var(--st-done);color:var(--st-done)}
+.pill-none{background:var(--accent-soft);border-color:var(--muted);color:var(--muted)}
+.pill-error{background:rgba(179,90,20,.14);border-color:var(--st-error);color:var(--st-error)}
+.pill-skipped{background:var(--accent-soft);border-color:var(--faint);color:var(--faint)}
+.pill-pending{background:var(--accent-soft);border-color:var(--st-pending);color:var(--st-pending)}
+.pill-correct{background:rgba(47,125,79,.14);border-color:var(--vd-correct);color:var(--vd-correct)}
+.pill-wrong{background:rgba(192,57,43,.14);border-color:var(--vd-wrong);color:var(--vd-wrong)}
+.pill-acceptable{background:rgba(201,138,30,.14);border-color:var(--vd-acceptable);color:var(--vd-acceptable)}
+.pill-oov{background:rgba(90,74,138,.14);border-color:var(--oov);color:var(--oov)}
+.pill-info{background:var(--accent-soft);border-color:var(--steel);color:var(--steel)}
+
+/* chips / filter bar — 4px black-bordered boxes; active = filled black. */
+.filters{display:flex;flex-wrap:wrap;gap:10px;margin:8px 0 16px}
+.filter{display:inline-flex;align-items:center;gap:8px;font-size:14px;border:4px solid var(--rule-strong);padding:6px 14px;cursor:pointer;background:var(--paper);color:var(--ink);text-decoration:none;font-weight:500;transition:background .12s,color .12s}
+.filter:hover{background:var(--accent-soft)}
+.filter.active{background:var(--ink);color:#fff;border-color:var(--ink);font-weight:600}
+.filter.active:hover{background:var(--ink)}
+.filter .count{background:var(--accent-soft);padding:1px 8px;font-weight:700;font-size:12px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.filter.active .count{background:#fff;color:var(--ink)}
+
+/* controls bar (dashboard buttons) */
+.controls{background:var(--paper);border:2px solid var(--rule-strong);padding:12px 16px;margin-bottom:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.controls form{display:inline}
+button,.controls input[type=submit]{font:inherit;padding:7px 18px;border:2px solid var(--rule-strong);background:var(--paper);color:var(--ink);cursor:pointer;font-size:14px;font-weight:500;transition:background .12s,color .12s}
+button:hover{background:var(--ink);color:#fff}
+.controls .run{background:var(--vd-correct);color:#fff;border-color:var(--vd-correct);font-weight:600}
+.controls .run:hover{background:#256440;border-color:#256440;color:#fff}
+.controls .stop{background:var(--vd-wrong);color:#fff;border-color:var(--vd-wrong);font-weight:600}
+.controls .stop:hover{background:#9a2d21;border-color:#9a2d21;color:#fff}
+
+select,input[type=text]{font:inherit;padding:7px 10px;border:2px solid var(--rule-strong);background:var(--paper);font-size:14px}
+input[type=text]:focus,select:focus{outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+.small{font-size:13px;color:var(--muted)}
+.dim{color:var(--faint)}
+.empty{padding:50px;color:var(--muted);text-align:center;background:var(--paper);border:2px solid var(--rule-strong)}
+
+/* page img + review */
+.review-img{border:2px solid var(--rule-strong);max-width:700px;max-height:900px}
+.page-row{display:flex;gap:20px;align-items:flex-start;border:1px solid var(--rule-strong);background:var(--paper);padding:24px;margin-bottom:20px}
+.page-img{flex:0 0 320px}
+.page-img img{max-width:320px;max-height:460px;border:2px solid var(--rule-strong)}
+.page-body{flex:1;min-width:0}
+/* document preview (pre-verdict): centered + larger than the OCR page-img */
+.doc-preview{text-align:center;border:1px solid var(--rule-strong);background:var(--paper);padding:16px;margin-bottom:20px}
+.doc-preview img{max-width:100%;max-height:88vh;border:2px solid var(--rule-strong)}
+.doc-preview .doc-page-label{display:block;text-align:left;font-size:12px;color:var(--muted);margin:6px 3px 12px;font-family:ui-monospace,Menlo,Consolas,monospace;text-transform:uppercase;letter-spacing:1px}
+
+/* ── verdict buttons (big, black-bordered; verdict hues on select) ── */
+.verdict-form{background:var(--paper);border:2px solid var(--rule-strong);padding:12px 14px;margin-bottom:12px}
+.verdict-btns{display:flex;gap:10px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
+.verdict-btn{font:inherit;font-size:13px;font-weight:600;padding:7px 16px;border:2px solid var(--rule-strong);cursor:pointer;background:var(--paper);color:var(--ink);min-width:110px;transition:background .1s,color .1s}
+.verdict-btn:hover{background:var(--accent-soft)}
+.verdict-btn.verdict-correct.sel{background:var(--vd-correct);color:#fff;border-color:var(--vd-correct)}
+.verdict-btn.verdict-wrong.sel{background:var(--vd-wrong);color:#fff;border-color:var(--vd-wrong)}
+.verdict-btn.verdict-acceptable.sel{background:var(--vd-acceptable);color:#fff;border-color:var(--vd-acceptable)}
+/* disabled OCR controls before a 'correct' class verdict — muted, no pointer */
+.verdict-btn[disabled],.verdict-submit[disabled]{opacity:.45;cursor:not-allowed}
+.verdict-btn[disabled]:hover{background:var(--paper)}
+.verdict-submit{font:inherit;font-size:13px;font-weight:600;padding:7px 16px;border:2px solid var(--rule-strong);background:var(--ink);color:#fff;cursor:pointer;margin-top:6px;transition:opacity .12s}
+.verdict-submit:hover{opacity:.82}
+.verdict-form .comment-row{display:block;margin:6px 0;font-size:13px}
+.verdict-form .comment-row textarea{width:100%;max-width:640px;font:inherit;font-size:14px;border:2px solid var(--rule-strong);padding:8px 10px;resize:vertical;background:var(--paper)}
+.verdict-form .comment-row textarea:focus{outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+/* DocType verdict form (Correct/Wrong): the 2-way "is this docType right?" check
+   rendered inline INSIDE the .doc-types-block, right under the chips — so the
+   reviewer sees the chips + page image and judges in place. Reuses .verdict-form
+   + the .verdict-correct/.verdict-wrong sel hues (Correct=green, Wrong=red);
+   tightens padding + buttons so it reads compactly above the 3-way OCR/ADE form.
+   Only rendered when chips exist (pages with no doc_types get no doctype form). */
+.doctype-verdict-form{padding:10px 14px;margin-top:4px}
+.doctype-verdict-form .verdict-btn{min-width:96px}
+.zoomable{cursor:zoom-in;transition:box-shadow .15s}
+.zoomable:hover{box-shadow:0 4px 16px rgba(0,0,0,.25)}
+
+/* ── image zoom lightbox ── */
+.zoom-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:99998;display:flex;align-items:center;justify-content:center;padding:20px;overflow:auto}
+.zoom-bar{position:fixed;top:0;left:0;right:0;background:rgba(0,0,0,.92);color:#fff;padding:9px 16px;display:flex;align-items:center;gap:14px;font-size:13px;z-index:99999;border-bottom:1px solid rgba(255,255,255,.18)}
+.zoom-bar button{font:inherit;padding:5px 12px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.1);color:#fff;cursor:pointer;font-size:13px}
+.zoom-bar button:hover{background:rgba(255,255,255,.22)}
+.zoom-zoom{font-weight:700;min-width:54px;text-align:center;font-family:ui-monospace,Menlo,Consolas,monospace}
+.zoom-img{max-width:none;max-height:none;box-shadow:0 10px 50px rgba(0,0,0,.6);transform-origin:center center;transition:transform .08s}
+
+/* ── worker log ── */
+.worker-log{background:#111;color:#e8e8e8;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;padding:16px;max-height:78vh;overflow:auto;white-space:pre-wrap;word-break:break-word;border:2px solid var(--rule-strong)}
+.ocr-text{white-space:pre-wrap;background:var(--accent-soft);border:2px solid var(--rule-strong);padding:12px;max-height:340px;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px}
+.extract-json{white-space:pre-wrap;background:var(--accent-soft);border:2px solid var(--rule-strong);padding:9px 10px;max-height:14em;overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;line-height:1.4;word-break:break-word}
+.inline-form{display:inline}
+a.open{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+a.open:hover{background:var(--accent-soft)}
+
+/* ── ck-modal: Request Body modal ── */
+.ck-body-btn{font:inherit;padding:6px 14px;border:2px solid var(--rule-strong);background:var(--paper);color:var(--ink);cursor:pointer;font-size:14px;font-weight:600;transition:background .12s}
+.ck-body-btn:hover{background:var(--accent-soft)}
+.ck-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:30px 20px;overflow-y:auto}
+.ck-modal{background:var(--paper);border:2px solid var(--rule-strong);max-width:1100px;width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 50px rgba(0,0,0,.3)}
+.ck-modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:4px solid var(--rule-strong);background:var(--paper)}
+.ck-modal-head h3{margin:0;font-size:18px;font-weight:700;color:var(--ink);text-transform:none;letter-spacing:0}
+.ck-modal-close{cursor:pointer;border:none;background:0;font-size:26px;color:var(--muted);padding:0 4px;line-height:1}
+.ck-modal-close:hover{color:var(--ink)}
+.ck-modal-body{flex:1;overflow-y:auto;padding:18px}
+.ck-modal-body summary{cursor:pointer;font-weight:600;font-size:14px;padding:5px 0;color:var(--ink)}
+.ck-modal-body details{margin-bottom:10px;border-bottom:1px solid var(--muted);padding-bottom:8px}
+.ck-modal-body details pre{background:var(--accent-soft);border:1px solid var(--muted);padding:11px;font-size:12px;line-height:1.5;max-height:500px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:6px 0 0;font-family:ui-monospace,Menlo,Consolas,monospace}
+.ck-modal-body .ck-tbl{border-collapse:collapse;font-size:12px;width:100%;font-family:ui-monospace,Menlo,Consolas,monospace}
+.ck-modal-body .ck-tbl th,.ck-modal-body .ck-tbl td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--muted)}
+.ck-modal-body .ck-tbl th{font-weight:600;position:sticky;top:0;color:var(--ink);text-transform:uppercase;letter-spacing:1px;font-size:10px;background:var(--paper)}
+.ck-json-hl{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ck-ds-pre{background:var(--accent-soft);border:1px solid var(--muted);padding:11px;max-height:500px;overflow:auto;margin:4px 0 0}
+.ck-preview-btn{font-size:11px;cursor:pointer;border:1px solid var(--rule-strong);background:var(--paper);color:var(--ink);padding:3px 10px;font-weight:600;transition:background .12s}
+.ck-preview-btn:hover{background:var(--accent-soft)}
+.ck-preview-btn:disabled{opacity:.4;cursor:default;border-color:var(--muted);color:var(--faint)}
+.ck-file-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px}
+.ck-file-popup{background:var(--paper);border:2px solid var(--rule-strong);width:95%;max-width:1200px;height:92vh;display:flex;flex-direction:column;box-shadow:0 14px 50px rgba(0,0,0,.4)}
+.ck-file-popup-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:2px solid var(--rule-strong);background:var(--paper);font-size:14px;font-weight:600}
+.ck-file-popup-close{cursor:pointer;border:none;background:0;font-size:26px;color:var(--muted);padding:0 4px;line-height:1}
+.ck-file-popup-close:hover{color:var(--ink)}
+.ck-file-popup-body{flex:1;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.ck-file-popup-body img{display:block;max-width:100%;max-height:100%;object-fit:contain}
+.ck-json-hl .key{color:#5a4a8a}
+.ck-json-hl .str{color:var(--vd-correct)}
+.ck-json-hl .num{color:var(--ink)}
+.ck-json-hl .bool{color:var(--vd-wrong)}
+.ck-json-hl .null{color:var(--faint)}
+.ck-tbl-status{display:inline-block;padding:2px 9px;border:1px solid var(--rule-strong);font-weight:600;font-size:11px;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.3px;text-transform:uppercase}
+.ck-tbl-status.found{background:rgba(47,125,79,.14);color:var(--found);border-color:var(--found)}
+.ck-tbl-status.missing{background:rgba(192,57,43,.14);color:var(--missing);border-color:var(--missing)}
+
+/* ── Frame-2 / Frame-3 structural components ──
+   .doc-section: a bordered "Document Item" (Frame 2) or "Document Section"
+   (Frame 3) — 4px black border, px-[38px] py-[36px] inner padding. */
+.doc-section{border:4px solid var(--rule-strong);background:var(--paper);padding:36px 38px;margin-bottom:24px}
+.doc-section .doc-section-h{font-size:24px;font-weight:600;color:var(--ink);margin:0 0 18px;letter-spacing:-.2px;line-height:1.25}
+.doc-section .doc-section-h .en{color:var(--muted);font-weight:500}
+.doc-section hr.doc-rule{border:0;border-top:1px solid var(--muted);margin:0 0 18px}
+/* Frame-3 review-card compaction: shrink the per-page "Document Section"
+   cards on /review/<sha> only — the /txn page's group sections keep the
+   larger base doc-section padding + 24px heading. */
+.doc-section.review-card{padding:16px 18px;margin-bottom:14px}
+.doc-section.review-card .doc-section-h{font-size:15px;margin:0 0 10px}
+/* Frame 2 sub-table rows (border-2) */
+.doc-row{display:grid;grid-template-columns:1.6fr 1.4fr .9fr .9fr .8fr;gap:18px;align-items:center;border:2px solid var(--rule-strong);padding:14px 16px;margin-bottom:14px;font-size:14px}
+.doc-row:last-child{margin-bottom:0}
+.doc-row .doc-col-h{display:none}  /* header row hidden; columns are obvious */
+.doc-row a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+.doc-row .mono{font-size:12px}
+/* Frame 2 table-style header for the columns (optional explicit header) */
+.doc-group-head{display:grid;grid-template-columns:1.6fr 1.4fr .9fr .9fr .8fr;gap:18px;padding:0 16px 8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;color:var(--muted)}
+
+/* Frame 3 heading block (under the 48px TXN h2): declared type + filename lines. */
+.review-heading{margin:0 0 20px}
+.review-heading .rh-declared{font-size:24px;font-weight:500;color:var(--ink);line-height:1.3}
+.review-heading .rh-declared .dim{color:var(--muted);font-weight:400}
+.review-heading .rh-filename{font-size:24px;font-weight:400;color:var(--muted);line-height:1.3;font-family:ui-monospace,Menlo,Consolas,monospace;word-break:break-all}
+/* Frame 3 right-column label ("OCR / ADE Result", "Classify Result = …"). */
+.ocr-label{font-size:14px;font-weight:600;color:var(--ink);margin:0 0 6px}
+/* Per-page "Classify Doctype" block: the doc_types is_* flags pulled out of the
+   extract JSON, shown as yes/no chips between the raw JSON and the ADE/OCR verdict. */
+.doc-types-block{margin:12px 0}
+.doctype-chips{display:flex;flex-wrap:wrap;gap:8px}
+.doctype-chip{display:inline-flex;align-items:center;gap:5px;font-size:13px;font-weight:600;
+  padding:5px 12px;border:2px solid var(--rule-strong);border-radius:999px;background:var(--paper);color:var(--ink)}
+.doctype-chip.dt-yes{background:var(--vd-correct);color:#fff;border-color:var(--vd-correct)}
+.doctype-chip.dt-no{background:var(--paper);color:var(--muted)}
+/* Page-1 classification block divider: separates the (file-wide) classify form
+   from the OCR block within the first card's right column. */
+.classify-block{margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--muted)}
+.classify-block .verdict-form{margin-bottom:0}
+</style>
+</head><body>
+<header>
+  <div class="app-title">Evaluate Document Classifier + OCR/ADE</div>
+  <div class="model-name">$model_name</div>
+  <nav>
+    <a href="/" class="$nav_home">Petitions</a>
+    <a href="/dashboard" class="$nav_dash">Dashboard</a>
+    <a href="/classify-score" class="$nav_classify">Classify score</a>
+    <a href="/worker-log" target="_blank">Worker Log</a>
+  </nav>
+  <span class="runstate">$run_state</span>
+</header>
+<div class="wrap">
+<h2>$title</h2>
+$body
+</div>
+<script>
+// copy-to-clipboard for any element with data-copy (the ⧉ buttons next to ids/txn_ids)
+document.addEventListener('click', function(e){
+  var b = e.target.closest('[data-copy]'); if(!b) return;
+  var v = b.getAttribute('data-copy') || '';
+  var done = function(){ b.classList.add('done'); setTimeout(function(){b.classList.remove('done');}, 900); };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(v).then(done, function(){ done(); });
+  } else {
+    var t = document.createElement('textarea'); t.value = v; document.body.appendChild(t); t.select();
+    try { document.execCommand('copy'); done(); } catch(_){}
+    document.body.removeChild(t);
+  }
+});
+
+// ── Request Body modal (ported from elicense-db-ui/ab_html.py, adapted) ──
+// The 👁️ preview targets /page/<sha>/1 (render.py renders PDF page 1 + images
+// alike to a PNG) instead of an inline base64 blob. Wired by ck-body.js to any
+// <button id="ckBodyBtn" data-txn="..."> the detail page renders when raw_json
+// is present. Lazy: fetches /body/<txn> only on click, never on page load.
+function _ckHlJson(obj){
+  var j=JSON.stringify(obj, null, 2);
+  return j.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"((?:[^"\\]|\\.)*)"\s*:/g,'<span class="key">"$1"</span>:')
+    .replace(/:(\s*)"((?:[^"\\]|\\.)*)"/g, function(m,s1,s2){return ': '+s1+'<span class="str">"'+s2+'"</span>';})
+    .replace(/:(\s*)(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g,': $1<span class="num">$2</span>')
+    .replace(/:(\s*)(true|false)/g,': $1<span class="bool">$2</span>')
+    .replace(/:(\s*)(null)/g,': $1<span class="null">$2</span>');
+}
+function _ckFileTable(arr, label){
+  if(!arr || !arr.length) return '<p style="color:#999;font-size:12px;margin:4px 0">ไม่มี '+_ckEsc(label)+'</p>';
+  var rows=arr.map(function(e,i){
+    var ok=(e.status==='FOUND' && e.sha256);
+    var stat=e.status==='FOUND'
+      ? (e.sha256?'FOUND':'FOUND (no preview)')
+      : 'MISSING';
+    var cls=(e.status==='FOUND' && e.sha256)?'found':'missing';
+    var btn=ok?('<button class="ck-preview-btn" data-i="'+i+'" data-l="'+_ckEsc(label)+'" data-sha="'+_ckEsc(e.sha256)+'">👁️ ดู</button>')
+              : (e.status==='FOUND'?'<span class="small dim">(no sha256)</span>':'');
+    return '<tr><td>'+(i+1)+'</td><td>'+_ckEsc(e.filetype||'')+'</td><td>'+_ckEsc(e.filename||'')+'</td>'
+      +'<td><span class="ck-tbl-status '+cls+'">'+stat+'</span></td><td>'+btn+'</td></tr>';
+  }).join('');
+  return '<table class="ck-tbl"><thead><tr><th>#</th><th>ประเภท</th><th>ชื่อไฟล์</th><th>สถานะ</th><th></th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+function _ckEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _ckShowPreview(sha, filename, filetype){
+  var overlay=document.createElement('div'); overlay.className='ck-file-overlay';
+  overlay.innerHTML='<div class="ck-file-popup"><div class="ck-file-popup-head"><span>📄 '
+    +_ckEsc(filetype||'')+' — '+_ckEsc(filename||'')+'</span><button class="ck-file-popup-close">&times;</button></div>'
+    +'<div class="ck-file-popup-body"><img src="/page/'+encodeURIComponent(sha)+'/1" alt="'+_ckEsc(filename||'')+'"></div></div>';
+  var close=function(){ if(overlay.parentNode) overlay.remove(); };
+  overlay.querySelector('.ck-file-popup-close').addEventListener('click',close);
+  overlay.addEventListener('click',function(ev){ if(ev.target===overlay) close(); });
+  document.addEventListener('keydown',function _k(ev){ if(ev.key==='Escape'){ close(); document.removeEventListener('keydown',_k); } });
+  document.body.appendChild(overlay);
+}
+function _ckOpenBodyModal(txn){
+  var mount=document.getElementById('ckModalMount'); if(!mount) return;
+  mount.innerHTML='<div class="small dim" style="padding:8px">⏳ loading request body…</div>';
+  fetch('/body/'+encodeURIComponent(txn)).then(function(r){
+    if(!r.ok){ mount.innerHTML='<p class="small">no request body (status '+r.status+').</p>'; return null; }
+    return r.json();
+  }).then(function(rb){
+    if(!rb){ return; }
+    if(rb.error){ mount.innerHTML='<p class="small">'+_ckEsc(rb.error)+'</p>'; return; }
+    var dsPretty=rb.dataString?('<pre class="ck-ds-pre"><div class="ck-json-hl">'+_ckHlJson(rb.dataString)+'</div></pre>'):'<pre>(empty)</pre>';
+    var modal=document.createElement('div'); modal.className='ck-modal-overlay';
+    modal.innerHTML='<div class="ck-modal"><div class="ck-modal-head"><h3>📋 Request Body</h3>'
+      +'<div style="display:flex;align-items:center;gap:12px"><span style="font-size:12px;color:#7a8699">dataString '+(rb.dataString_blocks||0)+' บล็อก</span>'
+      +'<button class="ck-modal-close" title="ปิด (ESC)">&times;</button></div></div>'
+      +'<div class="ck-modal-body">'
+      +'<details open><summary>📄 dataString ('+(rb.dataString_blocks||0)+' บล็อก)</summary>'+dsPretty+'</details>'
+      +'<details open><summary>📎 PDF ('+(rb.pdf_found||0)+'/'+(rb.pdf_total||0)+')</summary>'+_ckFileTable(rb.pdfs,'PDF')+'</details>'
+      +'<details open><summary>🖼️ รูปภาพ ('+(rb.img_found||0)+'/'+(rb.img_total||0)+')</summary>'+_ckFileTable(rb.imgs,'รูปภาพ')+'</details>'
+      +'</div></div>';
+    var close=function(){ if(modal.parentNode) modal.remove(); };
+    modal.querySelector('.ck-modal-close').addEventListener('click',close);
+    modal.addEventListener('click',function(ev){ if(ev.target===modal) close(); });
+    document.addEventListener('keydown',function _k(ev){ if(ev.key==='Escape'){ close(); document.removeEventListener('keydown',_k); } });
+    document.body.appendChild(modal);
+    mount.innerHTML='';  // clear the loading placeholder now the modal is mounted on body
+    Array.from(modal.querySelectorAll('.ck-preview-btn')).forEach(function(btn){
+      btn.addEventListener('click',function(){
+        _ckShowPreview(btn.getAttribute('data-sha'), btn.closest('tr').querySelectorAll('td')[2].textContent, btn.getAttribute('data-l'));
+      });
+    });
+  }).catch(function(err){ mount.innerHTML='<p class="small">failed to load: '+_ckEsc(err)+'</p>'; });
+}
+document.addEventListener('click', function(e){
+  var btn = e.target.closest('#ckBodyBtn'); if(!btn) return;
+  var txn = btn.getAttribute('data-txn'); if(!txn) return;
+  _ckOpenBodyModal(txn);
+});
+
+// ── verdict button selection: clicking a colored button sets the hidden
+//    verdict input, highlights the button, AND auto-saves the verdict via
+//    fetch (no page reload) — the separate submit button stays as a manual
+//    fallback (it also carries the comment). Works for the class form
+//    (#class_verdict) and each page form (.page_verdict). ──
+document.addEventListener('click', function(e){
+  var b = e.target.closest('.verdict-btn'); if(!b) return;
+  e.preventDefault();
+  var form = b.closest('.verdict-form'); if(!form) return;
+  var v = b.getAttribute('data-verdict'); if(!v) return;
+  form.querySelectorAll('.verdict-btn').forEach(function(x){ x.classList.remove('sel'); });
+  b.classList.add('sel');
+  var hidden = form.querySelector('input[name="verdict"]');
+  if(hidden) hidden.value = v;
+  // auto-save: POST the form's fields to its action via fetch
+  var data = new URLSearchParams(new FormData(form));
+  fetch(form.getAttribute('action') || '/verdict', {method:'POST', body:data})
+    .then(function(r){
+      b.textContent = r.ok ? b.textContent.replace(/\s*✓$/,'') + ' ✓saved'
+                           : b.textContent + ' ✗error';
+      setTimeout(function(){ b.textContent = b.textContent.replace(/\s*(✓saved|✗error)$/,''); }, 1200);
+    })
+    .catch(function(){ b.textContent = b.textContent + ' ✗error';
+      setTimeout(function(){ b.textContent = b.textContent.replace(/\s*✗error$/,''); }, 1200); });
+});
+
+// ── DeQA-Doc quality pills: lazily fill unscored pages via GET /quality/<sha>/<page>.
+//    The endpoint scores on demand (GPU service, may cold-load ~30s the first
+//    time) and caches in file_pages — so one pill may stay "…" a while, then
+//    all subsequent visits render server-side.
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('[data-quality-sha]').forEach(function(el){
+    fetch('/quality/' + encodeURIComponent(el.getAttribute('data-quality-sha'))
+          + '/' + el.getAttribute('data-quality-page'))
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if(!j || j.score == null){ el.textContent = '◆ —'; el.title = 'quality unavailable'; return; }
+        el.textContent = '◆ ' + Number(j.score).toFixed(2) + ' ' + j.level;
+        el.classList.remove('q-pending'); el.classList.add('q-' + j.level);
+      })
+      .catch(function(){ el.textContent = '◆ —'; });
+  });
+});
+
+// ── image zoom lightbox: click any .zoomable image to open it full-size in a
+//    modal with zoom in/out + reset, scroll/pan, ESC/click-out to close. ──
+(function(){
+  var zoom = 1, panX = 0, panY = 0, img = null, overlay = null, dragging = false, sx, sy, px, py;
+  function open(src, pageLabel){
+    overlay = document.createElement('div'); overlay.className = 'zoom-overlay';
+    var bar = document.createElement('div'); bar.className = 'zoom-bar';
+    bar.innerHTML = '<span>'+ (pageLabel?('📄 '+pageLabel):'📄 document') +'</span>'
+      + '<button data-z="1.5">＋ zoom</button>'
+      + '<button data-z="-1.5">－ zoom</button>'
+      + '<button data-z="0">⟳ reset</button>'
+      + '<span class="zoom-zoom">100%</span>'
+      + '<button data-close>✕ close (ESC)</button>';
+    img = document.createElement('img'); img.className = 'zoom-img'; img.src = src;
+    overlay.appendChild(img); overlay.appendChild(bar);
+    document.body.appendChild(overlay);
+    zoom = 1; panX = 0; panY = 0; apply();
+    overlay.querySelector('[data-close]').addEventListener('click', close);
+    overlay.querySelectorAll('[data-z]').forEach(function(b){
+      b.addEventListener('click', function(){
+        var d = parseFloat(b.getAttribute('data-z'));
+        if(d === 0){ zoom = 1; panX = 0; panY = 0; }
+        else { zoom = Math.max(0.2, Math.min(8, zoom + d)); }
+        apply();
+      });
+    });
+    overlay.addEventListener('click', function(ev){ if(ev.target === overlay) close(); });
+    overlay.addEventListener('wheel', function(ev){ ev.preventDefault(); zoom = Math.max(0.2, Math.min(8, zoom - ev.deltaY * 0.0015)); apply(); }, {passive:false});
+    img.addEventListener('mousedown', function(ev){ dragging = true; sx = ev.clientX; sy = ev.clientY; px = panX; py = panY; ev.preventDefault(); });
+    document.addEventListener('mousemove', mv);
+    document.addEventListener('mouseup', mu);
+    document.addEventListener('keydown', esc);
+  }
+  function mv(ev){ if(!dragging) return; panX = px + (ev.clientX - sx); panY = py + (ev.clientY - sy); apply(); }
+  function mu(){ dragging = false; }
+  function esc(ev){ if(ev.key === 'Escape'){ close(); } }
+  function apply(){ if(!img) return; img.style.transform = 'translate('+panX+'px,'+panY+'px) scale('+zoom+')'; var z = overlay.querySelector('.zoom-zoom'); if(z) z.textContent = Math.round(zoom*100)+'%'; }
+  function close(){ if(overlay && overlay.parentNode) overlay.remove(); overlay = null; img = null; dragging = false; document.removeEventListener('mousemove', mv); document.removeEventListener('mouseup', mu); document.removeEventListener('keydown', esc); }
+  document.addEventListener('click', function(e){
+    var t = e.target.closest('img.zoomable'); if(!t) return;
+    e.preventDefault();
+    open(t.getAttribute('src'), t.getAttribute('data-page') ? ('Page '+t.getAttribute('data-page')) : '');
+  });
+})();
+</script>
+</body></html>

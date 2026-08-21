@@ -1,0 +1,23 @@
+# Postgres 15 for the eval harness. Host port 5435 (5433/5434 were taken on this box).
+# Bring up with:  docker compose up -d
+services:
+  postgres:
+    image: postgres:15
+    container_name: evalutea_classi_ocr_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eval
+      POSTGRES_PASSWORD: eval
+      POSTGRES_DB: evalutea_classi_ocr
+    ports:
+      - "5435:5432"
+    volumes:
+      - evalutea_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eval -d evalutea_classi_ocr"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  evalutea_pg_data:

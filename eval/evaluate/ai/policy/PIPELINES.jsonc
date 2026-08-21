@@ -1,0 +1,40 @@
+{
+    // Per-attachment-type process pipelines for validator_app.py.
+    // "steps" run in order. Available steps: ocr, keyword_retrieve, rotation, extract.
+    // "rotation" doesn't render as its own step — it controls whether the
+    // "check & auto-correct rotation" checkbox exists in the final step.
+    // "ocr" and/or "keyword_retrieve" (in that order, if both used) must be a PREFIX
+    // of "steps" to render before the page grid — keyword_retrieve auto-selects
+    // matching pages, and ocr pre-warms the cache both keyword_retrieve's search and
+    // extract's ocr_context route read from (avoids re-OCR'ing the same pages).
+    // Types not listed here use "default".
+    // "extract_mode": "direct" (images only) or "ocr_context" (OCR first,
+    // text fed to extraction as context).
+    // Optional per-type "prompts": preconfigured overrides of the default step
+    // prompts, e.g. "prompts": { "extract": "..." } —
+    // shown (and still editable) in the UI's Prompt settings panel.
+    // Prompt names: rotation, ocr, extract, extract_ocr.
+
+
+
+
+
+    "default": {
+        "steps": [
+            "ocr",
+            "keyword_retrieve",
+            "rotation",
+            "extract"
+        ],
+        "extract_mode": "direct",
+        "prompts": {}
+    },
+    "juristic_person_certificate": {
+        "steps": [
+            "rotation",
+            "extract"
+        ],
+        "extract_mode": "direct",
+        "prompts": {}
+    }
+}

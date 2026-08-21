@@ -1,0 +1,18 @@
+{
+    "มีแผนผังแสดงการติดตั้งเครื่องจักร": "true/false",
+    "แผนผังแสดงการติดตั้งเครื่องจักร": {
+        "คนเซ็นรับรอง": [
+            {
+                "ชื่อ": "name",
+                "ตำแหน่ง": "architect" // ตัวอย่าง: architect, structural engineer, sanitary engineer, electrical engineer, mechanical engineer, civil engineer, etc.
+            },
+            {
+                // สามารถมีคนเซ็นรับรองได้หลายคน
+            }
+        ]
+    },
+
+    "ocr_result": "CONTEXT", // OCR CONTEXT for help QA
+    "file": "ชื่อไฟล์",            // ชื่อไฟล์ที่เก็บข้อมูลนี้
+    "page": "เลขหน้าที่เก็บข้อมูลนี้"   // เลขหน้าที่เก็บข้อมูลนี้
+}

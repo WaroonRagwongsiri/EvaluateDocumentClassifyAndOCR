@@ -1,0 +1,27 @@
+{
+    "เป็นหน้าปกแผนผัง": "true/false",  
+    "เป็นแบบแปลนอาคารโรงงาน": "true/false",
+    
+    "แบบแปลนอาคารโรงงาน": {
+        "ชื่อโครงการ": "ชื่อโครงการ",
+        "ที่ตั้งโครงการ": "ที่ตั้งโครงการ",
+
+        "Drawing title": "name",
+        "Draw by": "name",
+
+        "คนเซ็นรับรอง": [
+            {
+            "ชื่อ": "name",
+            "ตำแหน่ง": "architect" // ตัวอย่าง: architect, structural engineer, sanitary engineer, electrical engineer, mechanical engineer, civil engineer, etc.
+            },
+            {
+            // สามารถมีคนเซ็นรับรองได้หลายคน
+            }
+        ],
+        "havecompanystamp": "true/false" // กรณีมีตราบริษัท ให้ใส่ true, กรณีไม่มีตราบริษัท ให้ใส่ false
+
+    },
+    
+    "file": "ชื่อไฟล์",            // ชื่อไฟล์ที่เก็บข้อมูลนี้
+    "page": "เลขหน้าที่เก็บข้อมูลนี้"   // เลขหน้าที่เก็บข้อมูลนี้
+}

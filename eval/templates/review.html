@@ -1,0 +1,18 @@
+$review_heading
+
+$legend
+
+$stale_pages_note
+
+$page_sections
+
+<h3>Re-run AI on this file</h3>
+<form method="post" action="/review/$sha/rerun" class="inline-form">
+  <input type="hidden" name="declared" value="$declared">
+  <button>Re-run</button>
+  <span class="small">resets this file to pending (class + all pages), clears its verdicts,
+  and auto-starts the worker if idle. Rate-limited 30s/file.</span>
+</form>
+
+<h3>Contexts</h3>
+$contexts

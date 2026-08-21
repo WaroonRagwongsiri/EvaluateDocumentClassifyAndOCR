@@ -1,0 +1,237 @@
+// E-License Document Classification + OCR Evaluation App
+// Postgres 15+, database `evalutea_classi_ocr`, host port 5435 (docker-compose).
+// Converted from PLAN.md.
+
+// ============================================================================
+// Enums (Postgres CREATE TYPE ... AS ENUM). Members are literal snake_case keys.
+// The 19 in-vocab members are identical strings in both enums.
+// ============================================================================
+
+// 19 classifiable types (policy_loader.list_classifiable_types()).
+// The classifier can only output one of these, or the literal "none" sentinel
+// (handled as ai_class_status='none', not a member of this enum).
+Enum classifiable_category_t {
+  juristic_person_certificate
+  land_map_diagram
+  factory_building_plan
+  factory_safety_certificate
+  factory_building_diagram
+  machine_installation_diagram
+  waste_document
+  emissions_document
+  name_change_certificate
+  power_of_attorney_with_revenue_stamp
+  factory_document_of_right
+  consent_document_to_set_up_factory
+  power_of_attorney_competent_authority
+  copy_of_house_registration_factory_location
+  copy_of_professional_engineering_license
+  factory_operation_risk
+  environmental_risk
+  environmental_impact_eia
+  environmental_impact_iee
+}
+
+// Declared categories: the 26 build_dataset.ATTACH_ORDER keys PLUS 4 extras that
+// actually appear in filtered.csv.table_column_name as real buckets:
+// attchment, production_process_diagram, factory_maps_attchment, factory_eia_attchment.
+// = 30 members. The 19 that overlap classifiable_category_t are in-vocab; the 11
+// rest are OOV (never predictable by the classifier).
+Enum declared_category_t {
+  // --- 19 in-vocab (identical to classifiable_category_t) ---
+  juristic_person_certificate
+  land_map_diagram
+  factory_building_plan
+  factory_safety_certificate
+  factory_building_diagram
+  machine_installation_diagram
+  waste_document
+  emissions_document
+  name_change_certificate
+  power_of_attorney_with_revenue_stamp
+  factory_document_of_right
+  consent_document_to_set_up_factory
+  power_of_attorney_competent_authority
+  copy_of_house_registration_factory_location
+  copy_of_professional_engineering_license
+  factory_operation_risk
+  environmental_risk
+  environmental_impact_eia
+  environmental_impact_iee
+  // --- 11 OOV (never predictable by the classifier) ---
+  factory_building_plan_certifier
+  machine_installation_diagram_certifier
+  waste_document_certifier
+  emissions_document_certifier
+  another_document
+  officer_document_requested
+  applicant_signature
+  attchment
+  production_process_diagram
+  factory_maps_attchment
+  factory_eia_attchment
+}
+
+// ============================================================================
+// Tables
+// ============================================================================
+
+// petitions — one row per GET-mock petition (~7,157 JSONs).
+// txn_id UNIQUE is the reliable join key to filtered.csv. raw_json is nullable
+// because some petitions surface first from the CSV before their JSON is read.
+Table petitions {
+  id          uuid        [pk, note: 'result.id (from JSON result.id; also in filename)']
+  txn_id      uuid        [unique, note: 'result.txn_id (join key to filtered.csv rows)']
+  document_no text        [note: "e.g. '69-10-RG-000536'"]
+  state       text        [note: "e.g. 'accept'"]
+  raw_json    jsonb       [note: 'full GET-mock result (NULL for petitions known only via CSV)']
+  indexed_at  timestamptz [not null, default: `now()`]
+  indexes {
+    document_no
+    state
+  }
+}
+
+// files — one row per unique content (sha256). AI classification lives here (1:1).
+// Indexer reads each filtered.csv row (sha256 = hashed_value, local_path from
+// local_file_path/filename); CSV is already content-deduped. Page PNGs rendered
+// on demand and cached on disk at <cache>/<sha256>/page_<n>.png (path derivable,
+// not stored).
+//
+// ai_class_status: pending | done | none | error | skipped
+//   pending — not yet classified (worker claims these).
+//   done    — model returned one of the 19; ai_predicted_category set.
+//   none    — model returned the `none` sentinel; predicted is NULL.
+//   error   — call failed; ai_class_error set.
+//   skipped — content_kind='other' (doc/docx/xlsx); nothing classified/OCR'd.
+//
+// OOV is NOT stored here: it is a derived property of the declared type at the
+// (sha256, declared_category) scoring level (declared_category is OOV iff it is
+// not a member of classifiable_category_t).
+Table files {
+  sha256                   text                   [pk, note: '= filtered.csv.hashed_value']
+  local_path               text                   [not null, note: '= filtered.csv.local_file_path||"%"||filename']
+  filename                 text                   [not null, note: "e.g. '1741938446467.pdf'"]
+  ext                      text                   [note: 'lower(filename suffix): pdf|png|jpg|docx...']
+  content_kind             text                   [not null, note: 'pdf | image (jpg/png/...) | other (doc/xlsx -> not processable)']
+  size_bytes               bigint                 [not null]
+  page_count               int                    [not null, note: 'derived via PyMuPDF; 1 for single images; 0 for unprocessable']
+  declared_filetype_first  declared_category_t    [note: 'first-seen declared category (fast-path prefill)']
+
+  // AI classification (runs once per sha256; prompt is content-only, no declared type)
+  ai_class_status          text                   [not null, default: 'pending', note: 'pending|done|none|error|skipped']
+  ai_predicted_category    classifiable_category_t [note: 'set when status=done; NULL otherwise']
+  ai_class_latency_s       real
+  ai_class_error           text                   [note: 'set when status=error']
+  ai_class_raw             jsonb                  [note: 'full do_chat dict {content,thinking,raw,latency_s,error}']
+  ai_class_model           text
+  ai_class_at              timestamptz
+
+  first_seen_at            timestamptz            [not null, default: `now()`]
+  indexes {
+    // partial index: WHERE ai_class_status = 'pending'
+    sha256 [note: 'partial: WHERE ai_class_status = pending (worker claim index; PK already covers sha256)']
+  }
+}
+
+// file_pages — one row per page; AI OCR lives here (1:N). Created by the indexer.
+// ai_ocr_status: pending | done | error
+Table file_pages {
+  sha256            text        [not null]
+  page_no           int         [not null, note: '1-based']
+  ai_ocr_status     text        [not null, default: 'pending', note: 'pending|done|error']
+  ai_ocr_text       text        [note: 'do_chat.content (transcribed text)']
+  ai_ocr_latency_s  real
+  ai_ocr_error      text
+  ai_ocr_raw        jsonb       [note: 'full do_chat dict']
+  ai_ocr_model      text
+  ai_ocr_at         timestamptz
+  indexes {
+    (sha256, page_no) [pk]
+    // partial index: WHERE ai_ocr_status = 'pending'
+    (sha256, page_no) [note: 'partial: WHERE ai_ocr_status = pending (worker page-claim index)']
+  }
+}
+
+// petition_files — many-to-many: a file as it appears in a petition under a declared
+// type. The same sha256 can appear in multiple petitions, possibly under different
+// declared categories — each (sha256, declared_category) is a distinct correctness
+// question. source_column (raw, unvalidated) is kept alongside declared_category
+// (enum) for traceability in case a future CSV value isn't in the enum yet.
+Table petition_files {
+  petition_id       uuid                 [not null]
+  sha256            text                 [not null]
+  declared_category declared_category_t  [not null, note: '= filtered.csv.table_column_name']
+  txn_id            uuid                 [note: '= filtered.csv.txn_id (traceability; == petitions.txn_id)']
+  source_table      text                 [note: 'filtered.csv.table_name (general_petition_attachment|process|personal|factory)']
+  source_column     text                 [note: 'filtered.csv.table_column_name (raw column name)']
+  source_file_name  text                 [note: 'filtered.csv.filename (display)']
+  indexed_at        timestamptz          [not null, default: `now()`]
+  indexes {
+    (petition_id, sha256, declared_category) [pk]
+    sha256
+    declared_category
+    petition_id
+  }
+}
+
+// verdicts — human review. One classification verdict (page_no NULL) + N OCR verdicts.
+// Classification and OCR are stages: human judges classification first; OCR verdicts
+// exist only when classification was judged `correct` (if class is `wrong`, OCR is
+// skipped — no OCR verdict rows). OCR labels: correct | acceptable | bad.
+//
+// "OCR only when class is correct" is enforced by the app (POST /verdict for a page
+// rejects if no `correct` classification verdict exists); it is not a DB CHECK because
+// it's a cross-row condition.
+//
+// NOTE: page_no is intentionally nullable (NULL = classification verdict). It canNOT be
+// part of a composite PRIMARY KEY — Postgres makes every PK column NOT NULL and would
+// then reject the NULL classification rows. Uniqueness is enforced by two partial
+// unique indexes (one class row per (sha256,declared); one OCR row per page+context).
+Table verdicts {
+  sha256            text                 [not null]
+  declared_category declared_category_t  [not null, note: 'which declared-type context']
+  page_no           int                  [note: 'NULL = classification; N = OCR page N']
+  verdict           text                 [not null, note: 'correct|wrong (class) OR correct|acceptable|bad (OCR)']
+  corrected_type    declared_category_t  [note: "human's true type (classification, when wrong)"]
+  comment           text                 [note: 'free text (any stage)']
+  annotator         text                 [note: 'who (open question; nullable for now)']
+  created_at        timestamptz          [not null, default: `now()`]
+  Note {
+    'CHECK: (page_no IS NULL AND verdict IN (correct,wrong)) OR (page_no IS NOT NULL AND verdict IN (correct,acceptable,bad)). page_no NOT in a composite PK (Postgres PK cols are NOT NULL); uniqueness via partial unique indexes.'
+  }
+  indexes {
+    (sha256, declared_category) [unique, note: 'partial UNIQUE WHERE page_no IS NULL — one class row per (sha256,declared)']
+    (sha256, declared_category, page_no) [unique, note: 'partial UNIQUE WHERE page_no IS NOT NULL — one OCR row per page+context']
+    (sha256, declared_category)
+    verdict
+    annotator
+  }
+}
+
+// run_control — single row for worker stop/continue.
+// The HTTP server holds the worker subprocess.Popen handle in-process; state /
+// timestamps / last_exit_code are maintained by the server for /run/status. The
+// worker only reads want_stop. Bootstrap: INSERT INTO run_control (id) VALUES (1)
+// ON CONFLICT DO NOTHING.
+Table run_control {
+  id               int          [pk, note: 'CHECK (id = 1) — enforces the single row']
+  want_stop        boolean      [not null, default: false, note: 'worker polls this each iteration & between pages']
+  state            text         [not null, default: 'idle', note: 'idle|running|stopping (server-maintained, display only)']
+  last_started_at  timestamptz
+  last_stopped_at  timestamptz
+  last_exit_code   int
+  updated_at       timestamptz  [not null, default: `now()`]
+  Note {
+    'CHECK (id = 1) enforces a single row. Bootstrap with: INSERT INTO run_control (id) VALUES (1) ON CONFLICT DO NOTHING;'
+  }
+}
+
+// ============================================================================
+// Relationships (ON DELETE CASCADE on all FKs into files/petitions)
+// ============================================================================
+
+Ref: file_pages.sha256 > files.sha256        [delete: cascade]
+Ref: petition_files.petition_id > petitions.id [delete: cascade]
+Ref: petition_files.sha256 > files.sha256    [delete: cascade]
+Ref: verdicts.sha256 > files.sha256          [delete: cascade]

@@ -1,0 +1,102 @@
+<div class="smallcaps" style="margin:2px 0 10px">At a glance · the dispatch in figures</div>
+<div class="stats">
+  <a class="stat" href="/petitions?view=files">
+    <span class="stat-num">$c_total_files</span>
+    <span class="stat-label">Files</span>
+    <span class="stat-sub">$c_all_petitions petition(s) · $pending pending</span>
+  </a>
+  <a class="stat" href="/?filter=ai_done">
+    <span class="stat-num">$ai_done_pct<span class="pct">%</span></span>
+    <span class="stat-label">AI done</span>
+    <div class="bar"><div class="seg seg-done" style="width:$ai_done_pct%"></div><div class="seg" style="width:$ai_rest_pct%"></div></div>
+  </a>
+  <a class="stat" href="/?filter=human_done">
+    <span class="stat-num">$reviewed_pct<span class="pct">%</span></span>
+    <span class="stat-label">Reviewed</span>
+    <div class="bar"><div class="seg seg-done" style="width:$reviewed_pct%"></div><div class="seg" style="width:$reviewed_rest_pct%"></div></div>
+  </a>
+  <a class="stat" href="/run/retry_errors" style="cursor:default">
+    <span class="stat-warn">$c_error</span>
+    <span class="stat-label">Errors</span>
+    <span class="stat-sub">class or page errored · Retry on worker-log</span>
+  </a>
+  <a class="stat" href="/review-queue">
+    <span class="stat-num">$c_review_queue</span>
+    <span class="stat-label">Needs review</span>
+    <span class="stat-sub stat-needs">AI-finished, not yet verdicted →</span>
+  </a>
+</div>
+
+<div class="score-chunks">
+  <section class="score-chunk">
+    <a class="score-head score-head-link" href="/classify-score$cs_qs" title="confusion matrix (human vs AI, per page)">Classify score</a>
+    <div class="score-sub">is the doc_types classification right? (per page) · <a class="open" href="/classify-score$cs_qs">confusion matrix →</a></div>
+    <div class="rings rings-2">
+      <a class="ring ring-correct" href="/verdict-pages?stage=doctype&verdict=correct" title="list pages marked Correct">
+        <div class="ring-disc" style="--p:$doctype_acc_pct;--c:var(--vd-correct)">$doctype_acc_correct</div>
+        <div class="ring-cap ring-cap-correct">Correct</div>
+      </a>
+      <a class="ring ring-wrong" href="/verdict-pages?stage=doctype&verdict=wrong" title="list pages marked Wrong">
+        <div class="ring-disc ring-disc-solid" style="--c:var(--vd-wrong)">$doctype_acc_wrong</div>
+        <div class="ring-cap ring-cap-wrong">Wrong</div>
+      </a>
+    </div>
+    <div class="score-total">Total: $doctype_acc_total</div>
+  </section>
+
+  <section class="score-chunk">
+    <div class="score-head">OCR / ADE score</div>
+    <div class="score-sub">is the extracted data correct? (per page)</div>
+    <div class="rings rings-3">
+      <a class="ring ring-correct" href="/verdict-pages?stage=ocr&verdict=correct" title="list pages marked Correct">
+        <div class="ring-disc" style="--p:$ocr_correct_pct;--c:var(--vd-correct)">$ocr_acc_correct</div>
+        <div class="ring-cap ring-cap-correct">Correct</div>
+      </a>
+      <a class="ring ring-acceptable" href="/verdict-pages?stage=ocr&verdict=acceptable" title="list pages marked Acceptable">
+        <div class="ring-disc" style="--p:$ocr_acceptable_pct;--c:var(--vd-acceptable)">$ocr_acc_acceptable</div>
+        <div class="ring-cap ring-cap-acceptable">Acceptable</div>
+      </a>
+      <a class="ring ring-wrong" href="/verdict-pages?stage=ocr&verdict=wrong" title="list pages marked Wrong">
+        <div class="ring-disc ring-disc-solid" style="--c:var(--vd-wrong)">$ocr_acc_wrong</div>
+        <div class="ring-cap ring-cap-wrong">Wrong</div>
+      </a>
+    </div>
+    <div class="score-total">Total: $ocr_acc_total</div>
+  </section>
+</div>
+
+<div class="filters">
+  <a class="filter $f_all_active" href="/?filter=">All petitions <span class="count">$c_all_petitions</span></a>
+  <a class="filter $f_ai_done_active" href="/?filter=ai_done">AI-done <span class="count">$c_ai_done</span></a>
+  <a class="filter $f_human_done_active" href="/?filter=human_done">Human-done <span class="count">$c_human_done</span></a>
+  <a class="filter $f_wrong_active" href="/?filter=human_say_ai_wrong">Human-say-AI-wrong <span class="count">$c_wrong</span></a>
+  <a class="filter $f_not_done_active" href="/?filter=still_not_done">Still-not-done <span class="count">$c_not_done</span></a>
+  <a class="filter" href="/review-queue">Needs review <span class="count">$c_review_queue</span></a>
+  <a class="filter" href="/worker-log" target="_blank">⚙ Worker controls + log</a>
+</div>
+
+<h3>How many files left</h3>
+$stacked_bar
+<ul class="stat-list">$status_list</ul>
+$legend
+
+<h3>Petitions $cards_header</h3>
+<div class="cards">
+$cards
+</div>
+<p class="small">$cards_more</p>
+
+<h3>Type filters (AND-compose with the status filter above)</h3>
+<form method="get" action="/petitions">
+  <input type="hidden" name="filter" value="$filter">
+  <label>declared category:
+    <select name="declared"><option value="">(any)</option>$declared_opts</select>
+  </label>
+  <label>predicted category:
+    <select name="predicted"><option value="">(any)</option>$predicted_opts</select>
+  </label>
+  <label><input type="checkbox" name="oov_only" value="1" $oov_checked> OOV-only</label>
+  <button>Apply</button>
+  <input type="hidden" name="view" value="$view">
+</form>
+<p class="small">$index_summary</p>
