@@ -122,7 +122,7 @@ Scores fill two ways, both persisting into `file_pages.quality_*`:
 ## Using the app
 
 There are two pages linked in the header (petition list, dashboard), plus the
-worker-log page and the review flow:
+worker-log, score-detail, and review-queue pages and the review flow:
 
 1. **Petition list (`/`)** — the landing page. One row per petition with its id
    (link to detail), full `txn_id`, `document_no`, `state`, file count, and an
@@ -144,8 +144,13 @@ worker-log page and the review flow:
      - **Still-not-done** — the remaining backlog (not AI-done).
      Type filters (declared / predicted category, OOV-only) AND-compose with the
      selected status filter. Each filter can be browsed as petitions or as unique
-     files (`view=petitions|files`).
-3. **Worker log (`/worker-log`)** — controls + log tails for both workers:
+     files (`view=petitions|files`). The **Errors** card links here (the retry
+     form lives on `/worker-log`). Score-chunk heads link to their detail
+     pages: `/classify-score` (confusion matrix, human vs AI), `/ocr-score`
+     (per-verdict OCR stats), and `/quality-score` (quality distribution).
+3. **Review queue (`/review-queue`)** — AI-finished files with pages still
+   awaiting a human verdict, oldest first — the working list for review.
+4. **Worker log (`/worker-log`)** — controls + log tails for both workers:
    - **AI worker (classify + extract)** — **Start** spawns the worker; it claims
      pending files, classifies page 1, then runs the per-filetype extractor on
      every page. **Stop** sets a `want_stop` flag → the worker finishes the
@@ -156,14 +161,17 @@ worker-log page and the review flow:
      worker — use this after the LLM endpoint recovers from an outage (a plain
      Continue won't reclaim error files whose pages are also errored).
      **Re-index** re-runs the CSV+JSON load (idempotent). Log:
-     `/tmp/eval_worker.stdout.log`.
+     `/tmp/eval_worker.stdout.log`. All control buttons (`/run/*` and `/qrun/*`)
+     redirect back to `/worker-log` after the POST.
    - **Document quality score worker** — same Start/Stop/Continue shape
      (`/qrun/*`, status at `/qrun/status`), pending = unscored renderable
      pages. Log: `/tmp/eval_quality_worker.stdout.log`.
-4. **Petition detail** (`/petition/<id>`) — the files in one petition, with each
+5. **Petition detail** (`/petition/<id>`) — the files in one petition, with each
    file's sha256, name, declared type, `txn_id`, source table/column, AI predicted
    type + status, and human verdict; links into per-file review.
-5. **Review** (`/review/<sha>?declared=<type>`):
+6. **Review** (`/review/<sha>?declared=<type>` — `declared` is required):
+   - Every page card (with or without extractor output) shows its **quality
+     pill** (`◆ score level`); unscored pills fill lazily on view.
    - **Stage 1 — Classification:** judge **Correct | Wrong** (+ `corrected_type`
      when wrong). The auto predicted-vs-declared comparison is skipped for OOV
      declared types (the classifier can't predict them).
@@ -172,7 +180,9 @@ worker-log page and the review flow:
      Bad** + optional comment.
    - **Re-run** button resets that one file (class + all pages) to `pending`,
      clears its verdicts, and auto-starts the worker if idle. Rate-limited 30 s/file.
-6. Flipping classification back to `wrong` after entering OCR verdicts deletes the
+7. Files whose declared type has **no extractor** render preview-only page cards
+   (image + quality pill, no verdict forms).
+8. Flipping classification back to `wrong` after entering OCR verdicts deletes the
    stale OCR verdicts for that context (OCR is meaningless once class is wrong).
 
 ## CLI entry points

@@ -912,26 +912,30 @@ class Handler(BaseHTTPRequestHandler):
     # ===== review queue: AI-finished + not-yet-verdicted file contexts =====
     def _review_queue(self):
         """One row per (file, declared_category) context that is AI-finished
-        (status done/none/error, no pending pages) but not yet verdicted. Each
-        row shows the full txn_id (link to /txn/<txn>), document_no, the file
-        (name + kind + pages), the declared category, the AI predicted type +
-        status pill, and a direct review link. Empty state is honest: with the
-        LLM down, nothing is AI-done, so the queue is legitimately empty until
-        the worker runs against a live endpoint. Type filters via the same
-        ?declared=&predicted=&oov_only=1 form as /petitions."""
+        (status done/none/error, no pending pages) but not yet verdicted —
+        styled like the home petition list: filter chips, a search box, and a
+        txn_id-led table. Empty state is honest: with the LLM down, nothing is
+        AI-done, so the queue is legitimately empty until the worker runs
+        against a live endpoint."""
         qs = self._qs()
-        declared = qs.get("declared") or None
-        predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        type_clause = queries.type_filter_sql(declared, predicted, oov_only)
+        q = (qs.get("q") or "").strip()
 
-        sql = queries.review_queue_sql(type_clause, limit=500)
+        sql = queries.review_queue_sql("", limit=500)
         with connect() as conn, conn.cursor() as cur:
             cur.execute(sql)
             rows = cur.fetchall()
-            cur.execute(queries.review_queue_count_sql(type_clause))
+            cur.execute(queries.review_queue_count_sql(""))
             total = cur.fetchone()[0]
             conn.commit()
+
+        # client-side search over txn_id / document_no / sha / filename / types
+        ql = q.lower()
+        if ql:
+            def _match(r):
+                txn, dno, sha, sfn, kind, pgs, decl, aist, pred = r
+                hay = " ".join(str(x or "") for x in (txn, dno, sha, sfn, decl, pred)).lower()
+                return ql in hay
+            rows = [r for r in rows if _match(r)]
 
         body_rows = []
         for txn, dno, sha, sfn, kind, pgs, decl, aist, pred in rows:
@@ -947,15 +951,13 @@ class Handler(BaseHTTPRequestHandler):
                 f"<tr>{txn_cell}"
                 f"<td>{esc(dno or '—')}</td>"
                 f"<td class='small'>{file_cell}</td>"
-                f"<td>{esc(decl)}</td>"
-                f"<td>{esc(pred or '—')}</td>"
                 f"<td><span class='{_status_dot(aist)}'>{esc(aist)}</span></td>"
                 f"<td><a href='{href}'>review</a></td></tr>")
 
         if body_rows:
             table = ("<table><thead><tr>"
                      "<th>txn_id</th><th>document_no</th><th>file (sha256) + name</th>"
-                     "<th>declared type</th><th>AI predicted</th><th>AI status</th><th></th>"
+                     "<th>AI status</th><th></th>"
                      "</tr></thead><tbody>" + "".join(body_rows) + "</tbody></table>")
         else:
             table = ("<div class='empty'>Nothing needs review yet — files appear here "
@@ -964,29 +966,31 @@ class Handler(BaseHTTPRequestHandler):
                      "is legitimately empty until a Start/Continue runs against a "
                      "live endpoint.)</div>")
 
-        # type-filter form (same shape as /petitions) so the queue is narrowable
-        declared_labels = _enum_labels("declared_category_t")
-        classifiable = set(_enum_labels("classifiable_category_t"))
-        declared_opts = "".join(
-            f"<option value='{esc(l)}' {'selected' if l == declared else ''}>{esc(l)}{' (OOV)' if l not in classifiable else ''}</option>"
-            for l in declared_labels)
-        predicted_opts = "".join(
-            f"<option value='{esc(l)}' {'selected' if l == predicted else ''}>{esc(l)}</option>"
-            for l in sorted(classifiable))
-        form = (f"<form method='get' action='/review-queue' style='margin:8px 0 12px;display:inline-flex;gap:8px;align-items:center;flex-wrap:wrap'>"
-                f"<label>declared: <select name='declared'><option value=''>(any)</option>{declared_opts}</select></label>"
-                f"<label>predicted: <select name='predicted'><option value=''>(any)</option>{predicted_opts}</select></label>"
-                f"<label><input type='checkbox' name='oov_only' value='1' {'checked' if oov_only else ''}> OOV-only</label>"
-                f"<button>Apply</button></form>")
+        # filter chips + search box, same shape as the home petition list
+        chip_counts = {name: _count_where(pred, "") for name, pred in queries.STATUS_FILTERS.items()}
+        c_all = _count_distinct_petitions("")
+        c_review_queue = _count_review_queue()
+        chips = [('<a class="filter" href="/?filter=">all petitions <span class="count">%d</span></a>' % c_all)]
+        labels = {"ai_done": "AI-done", "human_done": "Human-done",
+                  "human_say_ai_wrong": "AI-wrong", "still_not_done": "Still-not-done"}
+        for name in ("ai_done", "human_done", "human_say_ai_wrong", "still_not_done"):
+            chips.append('<a class="filter" href="/?filter=%s">%s <span class="count">%d</span></a>'
+                         % (name, labels[name], chip_counts[name]))
+        chips.append('<a class="filter active" href="/review-queue">Needs review <span class="count">%d</span></a>'
+                     % c_review_queue)
+
+        search = (f"<form method='get' action='/review-queue' style='display:inline-flex;gap:6px;align-items:center'>"
+                  f"<input type='text' name='q' value='{esc(q)}' placeholder='search txn_id / document_no / sha / filename / type' style='min-width:300px'>"
+                  "<button>search</button></form>")
 
         shown = len(rows)
         more = (f"<p class='small'>Showing first {shown} of {total} context(s) needing review.</p>"
                 if total > shown else "")
-        body = (f"<h3>Files I need to review — AI-finished, not yet verdicted</h3>"
-                f"{form}"
-                f"<p class='small'>{total} context(s) need review{(' · filtered by ' + ('OOV-only' if oov_only else 'type') ) if (declared or predicted or oov_only) else ''}.</p>"
+        body = (f"<div class='filters'>{''.join(chips)}</div>"
+                f"<div style='margin:6px 0 12px'>{search}"
+                f"<span class='small' style='margin-left:14px'>{len(rows)} context(s) needing review</span></div>"
                 + table + more
-                + "<p class='small' style='margin-top:10px'>worker controls on the "
+                + "<p class='small' style='margin-top:10px'>worker controls + counts on the "
                 "<a class='open' href='/dashboard'>dashboard</a> page.</p>")
         self._html(200, base("Review queue", body, nav_home="active"))
 
@@ -1143,16 +1147,16 @@ class Handler(BaseHTTPRequestHandler):
 
         matrix, total, n_unlabeled = _confusion_matrix(rows)
 
-        # class order: the slug list plus any extra slugs seen in the data on
-        # either axis (extractors emit extra is_* sub-types like passport /
-        # id_card beyond the 21 declared slugs — they appear as columns when
-        # the AI answers them and as rows when a correction names them)
+        # full fixed axes: the slug list plus any extra slugs seen in the data
+        # on either axis (extractors emit extra is_* sub-types like passport /
+        # id_card beyond the 21 declared slugs), plus 'none' (AI answered with
+        # no true is_* flag). Every row/column always renders — zero rows are
+        # part of the matrix, not something to hide.
         col_slugs = list(DOC_TYPE_SLUGS)
-        extra = sorted({s for pair in matrix for s in pair if s != "?"
+        extra = sorted({s for pair in matrix for s in pair if s != "none"
                         and s not in col_slugs})
         col_slugs += extra
-        # columns: known+seen slugs + "?" (wrong with no resolvable AI class)
-        ai_cols = col_slugs + ["?"]
+        ai_cols = col_slugs + ["none"]
 
         def _cell(h, a):
             n = matrix.get((h, a), 0)
@@ -1171,28 +1175,22 @@ class Handler(BaseHTTPRequestHandler):
                 + "".join(f"<th class='cm-col'>{esc(a)}</th>" for a in ai_cols)
                 + "<th class='cm-total'>row</th></tr>")
         body_rows = []
-        used_rows = [h for h in col_slugs
-                     if any((h, a) in matrix for a in ai_cols)] or col_slugs
-        for h in used_rows:
+        for h in col_slugs:
             row_total = sum(matrix.get((h, a), 0) for a in ai_cols)
             body_rows.append(
                 f"<tr><th class='cm-row'>{esc(h)}</th>"
                 + "".join(_cell(h, a) for a in ai_cols)
                 + f"<td class='cm-total'>{row_total}</td></tr>")
-        col_totals = [sum(matrix.get((h, a), 0) for h in used_rows) for a in ai_cols]
-        foot = ("<tr><th class='cm-row'>col total</th>"
-                + "".join(f"<td class='cm-total'>{n}</td>" if n else "<td class='cm-zero'>—</td>"
-                          for n in col_totals)
-                + f"<td class='cm-total'><b>{total}</b></td></tr>")
 
         if total or n_unlabeled:
             table = (f"<div class='cm-wrap'><table class='cm-table'><thead>{head}</thead>"
-                     f"<tbody>{''.join(body_rows)}<tr class='cm-foot'>{foot}</tr></tbody></table></div>")
+                     f"<tbody>{''.join(body_rows)}</tbody></table></div>")
             legend = ("<div class='legend'>"
                       "<span class='lg-label'>cells</span>"
                       "<span class='vpill vpill-correct'>diagonal = agreed</span>"
                       "<span class='vpill vpill-wrong'>off-diagonal = confused</span>"
-                      "<span class='small dim'>— = 0 · rows: human class · cols: AI class</span>"
+                      "<span class='small dim'>— = 0 · rows: human class · cols: AI class · "
+                      "none = AI answered with no type</span>"
                       "</div>")
         else:
             table = ("<div class='empty'>No docType page verdicts yet — the matrix "
@@ -1210,38 +1208,34 @@ class Handler(BaseHTTPRequestHandler):
         back = "/dashboard?" + back_qs if back_qs else "/dashboard"
         filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
                        if (declared or predicted or oov_only) else "")
-        # score chunk (same numbers as the dashboard) + the type filter form
+        # score chunk (same numbers as the dashboard)
         chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
         chunk = render("chunk_classify.html", **chunk_vars)
-        form = _type_filter_form("/classify-score", declared, predicted, oov_only)
         body = (f"<h3>Classify score — doc_types confusion matrix (per page)</h3>"
                 f"<p class='small'>{total} page verdict(s) counted{filter_note} · "
                 f"<a class='open' href='{back}'>← back to dashboard</a></p>"
                 f"<div class='score-chunks'>{chunk}</div>"
-                f"<h3>Filter</h3>{form}"
                 + legend + table + unlabeled_note)
         self._html(200, base("Classify score", body, nav_dash="active"))
 
     # ===== ocr-score: OCR / ADE detail page =====
     def _ocr_score(self):
         """OCR / ADE score detail: the score chunk (Correct/Acceptable/Wrong
-        rings, honoring the type filters) + the filter form. Each ring drills
-        into /verdict-pages?stage=ocr&verdict=…"""
+        rings, honoring the type filters from the query string). Each ring
+        drills into /verdict-pages?stage=ocr&verdict=…"""
         qs = self._qs()
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
         oov_only = qs.get("oov_only") == "1"
         chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
         chunk = render("chunk_ocr.html", **chunk_vars)
-        form = _type_filter_form("/ocr-score", declared, predicted, oov_only)
         filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
                        if (declared or predicted or oov_only) else "")
         body = (f"<h3>OCR / ADE score — is the extracted data correct? (per page)</h3>"
                 f"<p class='small'>{chunk_vars['ocr_acc_total']} OCR page verdict(s) "
                 f"counted{filter_note} · "
                 f"<a class='open' href='/dashboard'>← back to dashboard</a></p>"
-                f"<div class='score-chunks'>{chunk}</div>"
-                "<h3>Filter</h3>" + form)
+                f"<div class='score-chunks'>{chunk}</div>")
         self._html(200, base("OCR / ADE score", body, nav_dash="active"))
 
     # ===== quality-score: document quality detail page =====
@@ -1690,7 +1684,7 @@ def _confusion_matrix(rows) -> tuple[dict, int, int]:
     verdict='correct' (or a wrong with no corrected_type yet, which falls back
     anyway) → the AI's own slug (the human agreed with it). corrected_type is
     pre-validated at POST time as a bare slug, so it's trusted here. Rows whose
-    AI slug can't be resolved (no true is_* flag) land in the '?' column when
+    AI slug can't be resolved (no true is_* flag) land in the 'none' column when
     the human class is known, else are skipped. Returns (matrix,
     total_counted, n_unplaced) where n_unplaced counts pages with neither a
     human nor an AI class."""
@@ -1706,7 +1700,7 @@ def _confusion_matrix(rows) -> tuple[dict, int, int]:
         else:
             n_unplaced += 1
             continue
-        col = ai_slug if ai_slug is not None else "?"
+        col = ai_slug if ai_slug is not None else "none"
         matrix[(human, col)] = matrix.get((human, col), 0) + 1
         total += 1
     return matrix, total, n_unplaced
