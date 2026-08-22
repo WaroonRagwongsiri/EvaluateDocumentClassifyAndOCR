@@ -620,8 +620,7 @@ class Handler(BaseHTTPRequestHandler):
             + table
             + "<p class='small' style='margin-top:10px'>worker controls + counts on the "
             "<a class='open' href='/dashboard'>dashboard</a> page.</p>")
-        self._html(200, base("TXN", body, nav_home="active",
-                             run_state=f"worker: {st['state']} · {st['pending']} pending"))
+        self._html(200, base("TXN", body, nav_home="active"))
 
     # ===== worker log (tail of /tmp/eval_worker.stdout.log) =====
     def _worker_section(self, ctl: WorkerControl, title: str, pending_label: str,
@@ -693,9 +692,7 @@ class Handler(BaseHTTPRequestHandler):
                                  extra_html=ai_extra, n=n)
             + self._worker_section(QWORKER, "Document quality score worker (DeQA-Doc)",
                                    "pages", n=n))
-        st = WORKER.status()
-        self._html(200, base("Worker log", body,
-                             run_state=f"worker: {st['state']} · {st['pending']} pending"))
+        self._html(200, base("Worker log", body))
 
     # ===== dashboard =====
     def _dashboard(self):
@@ -826,9 +823,8 @@ class Handler(BaseHTTPRequestHandler):
             oov_checked="checked" if oov_only else "",
             index_summary=f"files: see counts above · worker pid may be running",
         )
-        st2 = WORKER.status()
-        self._html(200, base("Dashboard", body, nav_dash="active",
-                             run_state=f"worker: {st2['state']} · {st2['pending']} pending"))
+        self._html(200, base("Dashboard", body, nav_dash="active"))
+
 
     # ===== petition/file list =====
     def _petitions(self):
