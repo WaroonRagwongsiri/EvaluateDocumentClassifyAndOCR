@@ -148,8 +148,17 @@ worker-log, score-detail, and review-queue pages and the review flow:
      form lives on `/worker-log`). Score-chunk heads link to their detail
      pages: `/classify-score` (confusion matrix, human vs AI), `/ocr-score`
      (per-verdict OCR stats), and `/quality-score` (quality distribution).
+     The detail pages have no filter forms of their own — filters only ride in
+     via the query string when following a filtered dashboard link.
+     `/classify-score` shows a **full fixed-axis confusion matrix**: every
+     doc-type slug is always both a row (human class) and a column (AI class)
+     — empty classes render as `—`, there's a per-row total but no column
+     totals, plus a final `none` column for AI answers with no true type flag.
 3. **Review queue (`/review-queue`)** — AI-finished files with pages still
-   awaiting a human verdict, oldest first — the working list for review.
+   awaiting a human verdict — the working list for review. Styled like the
+   petition list: the same filter chips (with the Needs-review chip active),
+   a search box (txn_id / document_no / sha256 / filename / type), and a
+   table of txn_id · document_no · file · AI status · review link.
 4. **Worker log (`/worker-log`)** — controls + log tails for both workers:
    - **AI worker (classify + extract)** — **Start** spawns the worker; it claims
      pending files, classifies page 1, then runs the per-filetype extractor on
