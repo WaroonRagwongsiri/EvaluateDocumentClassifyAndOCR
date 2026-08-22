@@ -52,7 +52,11 @@ log = logging.getLogger("eval.server")
 
 # --- worker subprocess control (in-process handle behind a lock) -----------
 class WorkerControl:
-    """Holds the worker Popen handle + run_control state behind a lock.
+    """Holds a worker Popen handle + its run_control columns behind a lock.
+
+    Parameterized so the same class drives the AI worker (classify+extract)
+    and the quality-score worker: each gets its own module, log file, and
+    stop/state/exit-code columns on the single run_control row.
 
     Single-server deployment: the handle lives in the server process. Start =
     Popen the worker + clear want_stop + state='running'; Stop = set want_stop +
@@ -60,7 +64,20 @@ class WorkerControl:
     process exiting, a reaper records last_exit_code and flips state='idle'.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, module: str, log_path: str, *,
+                 stop_col: str = "want_stop",
+                 state_col: str = "state",
+                 exit_col: str = "last_exit_code",
+                 pending_sql: str = "SELECT count(*) FROM files "
+                                    "WHERE ai_class_status='pending'") -> None:
+        self.module = module
+        self.log_path = log_path
+        self.stop_col, self.state_col, self.exit_col = stop_col, state_col, exit_col
+        self.pending_sql = pending_sql
+        base_route = "/run" if stop_col == "want_stop" else "/qrun"
+        self.start_route = f"{base_route}/start"
+        self.stop_route = f"{base_route}/stop"
+        self.cont_route = f"{base_route}/continue"
         self.lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
         self._reaper_started = False
@@ -90,12 +107,13 @@ class WorkerControl:
             with self.lock:
                 if self.proc is proc:
                     self.proc = None
-            log.info("worker exited code=%s", rc)
-            self._set(last_exit_code=rc, last_stopped_at=datetime.now(timezone.utc),
-                      state="idle")
+            log.info("%s exited code=%s", self.module, rc)
+            self._set(**{self.exit_col: rc, "last_stopped_at": datetime.now(timezone.utc),
+                         self.state_col: "idle"})
             # clear want_stop so a future Start isn't immediately stopped
             with connect() as conn, conn.cursor() as cur:
-                cur.execute("UPDATE run_control SET want_stop=false, updated_at=now() WHERE id=1")
+                cur.execute(f"UPDATE run_control SET {self.stop_col}=false, "
+                            "updated_at=now() WHERE id=1")
                 conn.commit()
 
     def start(self) -> str:
@@ -103,20 +121,21 @@ class WorkerControl:
             if self.proc is not None and self.proc.poll() is None:
                 return "already running"
             # clear want_stop and mark running before spawning
-            self._set(want_stop=False, state="running", last_started_at=datetime.now(timezone.utc))
+            self._set(**{self.stop_col: False, self.state_col: "running",
+                         "last_started_at": datetime.now(timezone.utc)})
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "eval.worker"],
+                [sys.executable, "-m", self.module],
                 cwd=_PROJECT_ROOT,
-                stdout=open("/tmp/eval_worker.stdout.log", "ab"),
+                stdout=open(self.log_path, "ab"),
                 stderr=subprocess.STDOUT,
             )
             self._ensure_reaper()
-            log.info("worker started pid=%s", self.proc.pid)
+            log.info("%s started pid=%s", self.module, self.proc.pid)
             return "started"
 
     def stop(self) -> str:
-        self._set(want_stop=True, state="stopping")
-        log.info("worker stop requested")
+        self._set(**{self.stop_col: True, self.state_col: "stopping"})
+        log.info("%s stop requested", self.module)
         return "stopping"
 
     def cont(self) -> str:
@@ -125,16 +144,25 @@ class WorkerControl:
 
     def status(self) -> dict:
         with connect() as conn, conn.cursor() as cur:
-            cur.execute("SELECT state, last_exit_code, want_stop FROM run_control WHERE id=1")
+            cur.execute(f"SELECT {self.state_col}, {self.exit_col}, {self.stop_col} "
+                        "FROM run_control WHERE id=1")
             state, last_exit_code, want_stop = cur.fetchone()
-            cur.execute("SELECT count(*) FROM files WHERE ai_class_status='pending'")
+            cur.execute(self.pending_sql)
             pending = cur.fetchone()[0]
             conn.commit()
         return {"state": state, "last_exit_code": last_exit_code,
                 "want_stop": want_stop, "pending": pending}
 
 
-WORKER = WorkerControl()
+WORKER = WorkerControl("eval.worker", "/tmp/eval_worker.stdout.log")
+QWORKER = WorkerControl("eval.quality_worker", "/tmp/eval_quality_worker.stdout.log",
+                        stop_col="quality_want_stop", state_col="quality_state",
+                        exit_col="quality_last_exit_code",
+                        pending_sql="""SELECT count(*) FROM file_pages fp
+                                       JOIN files f ON f.sha256 = fp.sha256
+                                       WHERE fp.quality_score IS NULL
+                                         AND fp.quality_level IS DISTINCT FROM 'error'
+                                         AND f.content_kind <> 'other'""")
 
 # Per-sha re-run throttle (in-memory; single-server deployment). Maps sha256 ->
 # monotonic time of the last re-run. 30s per file to avoid thrash (PLAN.md).
@@ -149,6 +177,80 @@ def _enum_labels(enum_name: str) -> list[str]:
         cur.execute("SELECT enumlabel FROM pg_enum e JOIN pg_type t ON e.enumtypid=t.oid "
                     "WHERE t.typname=%s ORDER BY e.enumsortorder", (enum_name,))
         return [r[0] for r in cur.fetchall()]
+
+
+def _score_chunk_vars(declared, predicted, oov_only) -> dict:
+    """One dict of every $placeholder the three score-chunk templates need
+    (chunk_classify / chunk_ocr / chunk_quality) — shared by the dashboard and
+    the per-chunk detail pages (/classify-score, /ocr-score, /quality-score)
+    so the numbers can never drift apart. Honors the dashboard type filters
+    for the verdict chunks; quality counts are corpus-wide."""
+    type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted, oov_only)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute(queries.doctype_breakdown_sql(type_clause_ctx))
+        dt_correct_b, dt_wrong, dt_total_b = cur.fetchone()
+        cur.execute(queries.ocr_breakdown_sql(type_clause_ctx))
+        ocr_correct_b, ocr_acceptable, ocr_wrong, ocr_total_b = cur.fetchone()
+        cur.execute("""SELECT quality_level, count(*) FROM file_pages
+                       WHERE quality_score IS NOT NULL GROUP BY quality_level""")
+        q_counts = {lvl: n for lvl, n in cur.fetchall()}
+        cur.execute("""SELECT count(*) FROM file_pages fp
+                       JOIN files f ON f.sha256 = fp.sha256
+                       WHERE fp.quality_score IS NULL
+                         AND fp.quality_level IS DISTINCT FROM 'error'
+                         AND f.content_kind <> 'other'""")
+        q_unscored = cur.fetchone()[0]  # also the quality worker's pending count
+        conn.commit()
+    q_total = sum(q_counts.values())
+    q_level_counts = {lvl: q_counts.get(lvl, 0)
+                      for lvl in ("excellent", "good", "fair", "poor", "bad")}
+    q_level_pcts = {lvl: round(100 * n / q_total) if q_total else 0
+                    for lvl, n in q_level_counts.items()}
+    return {
+        "doctype_acc_pct": round(100 * dt_correct_b / dt_total_b) if dt_total_b else 0,
+        "doctype_acc_correct": dt_correct_b, "doctype_acc_wrong": dt_wrong,
+        "doctype_acc_total": dt_total_b,
+        "ocr_acc_correct": ocr_correct_b, "ocr_acc_acceptable": ocr_acceptable,
+        "ocr_acc_wrong": ocr_wrong, "ocr_acc_total": ocr_total_b,
+        "ocr_correct_pct": round(100 * ocr_correct_b / ocr_total_b) if ocr_total_b else 0,
+        "ocr_acceptable_pct": round(100 * ocr_acceptable / ocr_total_b) if ocr_total_b else 0,
+        "q_unscored": q_unscored, "q_total": q_total,
+        "q_excellent": q_level_counts["excellent"], "q_good": q_level_counts["good"],
+        "q_fair": q_level_counts["fair"], "q_poor": q_level_counts["poor"],
+        "q_bad": q_level_counts["bad"],
+        "q_excellent_pct": q_level_pcts["excellent"], "q_good_pct": q_level_pcts["good"],
+        "q_fair_pct": q_level_pcts["fair"], "q_poor_pct": q_level_pcts["poor"],
+        # querystring preserving the type filters on chunk links
+        "cs_qs": esc("?" + urlencode({k: v for k, v in
+            (("declared", declared), ("predicted", predicted),
+             ("oov_only", "1" if oov_only else None)) if v}) if
+            (declared or predicted or oov_only) else ""),
+    }
+
+
+def _type_filter_form(action: str, declared, predicted, oov_only,
+                      hidden: dict | None = None) -> str:
+    """The declared/predicted/OOV filter form, pointed at any score detail
+    page (GET). Same controls as the dashboard's, so every score page filters
+    identically."""
+    declared_labels = _enum_labels("declared_category_t")
+    classifiable = set(_enum_labels("classifiable_category_t"))
+    declared_opts = "".join(
+        f"<option value='{esc(l)}' {'selected' if l==declared else ''}>{esc(l)}{' (OOV)' if l not in classifiable else ''}</option>"
+        for l in declared_labels)
+    predicted_opts = "".join(
+        f"<option value='{esc(l)}' {'selected' if l==predicted else ''}>{esc(l)}</option>"
+        for l in sorted(classifiable))
+    hidden_html = "".join(f'<input type="hidden" name="{esc(k)}" value="{esc(v)}">'
+                          for k, v in (hidden or {}).items())
+    return (f'<form method="get" action="{esc(action)}" class="type-filter-form">'
+            f"{hidden_html}"
+            "<label>declared category: "
+            f"<select name='declared'><option value=''>(any)</option>{declared_opts}</select></label> "
+            "<label>predicted category: "
+            f"<select name='predicted'><option value=''>(any)</option>{predicted_opts}</select></label> "
+            f"<label><input type='checkbox' name='oov_only' value='1' {'checked' if oov_only else ''}> OOV-only</label> "
+            "<button>Apply</button></form>")
 
 
 def _count_where(predicate_sql: str, type_clause: str) -> int:
@@ -359,8 +461,14 @@ class Handler(BaseHTTPRequestHandler):
             self._verdict_pages()
         elif path == "/classify-score":
             self._classify_score()
+        elif path == "/ocr-score":
+            self._ocr_score()
+        elif path == "/quality-score":
+            self._quality_score_detail()
         elif path.startswith("/quality/"):
             self._quality_score(path.removeprefix("/quality/"))
+        elif path == "/quality-pages":
+            self._quality_pages()
         elif path == "/petitions":
             self._petitions()
         elif path.startswith("/txn/"):
@@ -375,6 +483,8 @@ class Handler(BaseHTTPRequestHandler):
             self._page_png(path.removeprefix("/page/"))
         elif path == "/run/status":
             self._json(WORKER.status())
+        elif path == "/qrun/status":
+            self._json(QWORKER.status())
         elif path == "/worker-log":
             self._worker_log()
         elif path == "/favicon.ico":
@@ -392,6 +502,12 @@ class Handler(BaseHTTPRequestHandler):
             WORKER.cont(); self._redirect("/")
         elif path == "/run/retry_errors":
             self._post_retry_errors()
+        elif path == "/qrun/start":
+            QWORKER.start(); self._redirect("/worker-log")
+        elif path == "/qrun/stop":
+            QWORKER.stop(); self._redirect("/worker-log")
+        elif path == "/qrun/continue":
+            QWORKER.cont(); self._redirect("/worker-log")
         elif path == "/verdict":
             self._post_verdict()
         elif path == "/index":
@@ -508,22 +624,51 @@ class Handler(BaseHTTPRequestHandler):
                              run_state=f"worker: {st['state']} · {st['pending']} pending"))
 
     # ===== worker log (tail of /tmp/eval_worker.stdout.log) =====
+    def _worker_section(self, ctl: WorkerControl, title: str, pending_label: str,
+                        extra_html: str = "", n: int = 400) -> str:
+        """One worker's controls + log-tail block on the /worker-log page.
+        Parameterized so the AI worker and the quality-score worker render the
+        same shape with their own control routes, state dot, and log file."""
+        try:
+            with open(ctl.log_path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except FileNotFoundError:
+            lines = []
+        tail = lines[-n:] if len(lines) > n else lines
+        body_html = "".join(esc(ln) for ln in tail) or "(empty log)"
+        st = ctl.status()
+        last_exit = "—" if st["last_exit_code"] is None else st["last_exit_code"]
+        # control bar: Start/Stop/Continue + per-worker state/pending/exit readouts
+        controls = (
+            "<div class='controls'>"
+            f"<form class='inline-form' method='post' action='{ctl.start_route}'><button class='run'>Start</button></form>"
+            f"<form class='inline-form' method='post' action='{ctl.stop_route}'><button class='stop'>Stop</button></form>"
+            f"<form class='inline-form' method='post' action='{ctl.cont_route}'><button>Continue</button></form>"
+            "<span class='small'>|</span>"
+            f"<span class='wdot wdot-{esc(st['state'])}'>worker {esc(st['state'])}</span>"
+            f"<span class='small'>pending: <b>{esc(st['pending'])}</b> {esc(pending_label)}</span>"
+            f"<span class='small'>last exit: <b>{esc(last_exit)}</b></span>"
+            f"{extra_html}"
+            "<span class='small'>|</span>"
+            f"<a class='filter' href='?n=400'>last 400</a>"
+            "<a class='filter' href='?n=1000'>1000</a>"
+            "<a class='filter' href='?n=5000'>5000</a>"
+            "</div>")
+        empty_note = (
+            "<p class='small'>No worker log yet (the worker hasn't run, or the log "
+            f"<code>{esc(ctl.log_path)}</code> was cleared). Use Start above.</p>")
+        log_block = (f"<pre class='worker-log'>{body_html}</pre>"
+                     if lines else empty_note)
+        size_note = (f"<span class='small'>showing last <b>{n}</b> of <b>{len(lines)}</b> lines</span>"
+                     if lines else "")
+        return f"<h3>{title}</h3>" + controls + log_block + size_note
+
     def _worker_log(self):
         qs = self._qs()
         try:
             n = max(50, min(int(qs.get("n", "400")), 5000))
         except ValueError:
             n = 400
-        log_path = "/tmp/eval_worker.stdout.log"
-        try:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = fh.readlines()
-        except FileNotFoundError:
-            lines = []
-        tail = lines[-n:] if len(lines) > n else lines
-        body_html = "".join(esc(ln) for ln in tail) or "(empty log)"
-        st = WORKER.status()
-        last_exit = "—" if st["last_exit_code"] is None else st["last_exit_code"]
         # errored file count (class OR any extract page errored) for the "Retry errored" button
         with connect() as conn, conn.cursor() as cur:
             cur.execute("""SELECT count(DISTINCT f.sha256) FROM files f
@@ -532,17 +677,8 @@ class Handler(BaseHTTPRequestHandler):
                                          WHERE x.sha256=f.sha256 AND x.ai_extract_status='error')""")
             c_error = cur.fetchone()[0]
             conn.commit()
-        # worker control bar (moved here from the dashboard). Start/Stop/Continue
-        # + Re-index + Retry errored, plus the worker-state + log-size readouts.
-        controls = (
-            "<div class='controls'>"
-            "<form class='inline-form' method='post' action='/run/start'><button class='run'>Start</button></form>"
-            "<form class='inline-form' method='post' action='/run/stop'><button class='stop'>Stop</button></form>"
-            "<form class='inline-form' method='post' action='/run/continue'><button>Continue</button></form>"
-            "<span class='small'>|</span>"
-            f"<span class='wdot wdot-{esc(st['state'])}'>worker {esc(st['state'])}</span>"
-            f"<span class='small'>pending: <b>{esc(st['pending'])}</b> files</span>"
-            f"<span class='small'>last exit: <b>{esc(last_exit)}</b></span>"
+        # AI worker extras: Re-index + Retry errored + a dashboard link
+        ai_extra = (
             "<form class='inline-form' method='post' action='/index'>"
             "<button>Re-index</button>"
             "<span class='small'>(re-run CSV+JSON load; idempotent)</span>"
@@ -551,20 +687,13 @@ class Handler(BaseHTTPRequestHandler):
             f"<button>Retry errored ({c_error})</button>"
             "<span class='small'>(reset all error files+pages to pending, clear their verdicts)</span>"
             "</form>"
-            "<span class='small'>|</span>"
-            "<a class='filter' href='?n=400'>last 400</a>"
-            "<a class='filter' href='?n=1000'>1000</a>"
-            "<a class='filter' href='?n=5000'>5000</a>"
-            "<a class='filter' href='/dashboard'>← dashboard</a>"
-            "</div>")
-        empty_note = (
-            "<p class='small'>No worker log yet (the worker hasn't run, or the log "
-            f"<code>{esc(log_path)}</code> was cleared). Use Start above.</p>")
-        log_block = (f"<pre class='worker-log'>{body_html}</pre>"
-                     if lines else empty_note)
-        size_note = (f"<span class='small'>showing last <b>{n}</b> of <b>{len(lines)}</b> lines</span>"
-                     if lines else "")
-        body = (controls + log_block + size_note)
+            "<a class='filter' href='/dashboard'>← dashboard</a>")
+        body = (
+            self._worker_section(WORKER, "AI worker (classify + extract)", "files",
+                                 extra_html=ai_extra, n=n)
+            + self._worker_section(QWORKER, "Document quality score worker (DeQA-Doc)",
+                                   "pages", n=n))
+        st = WORKER.status()
         self._html(200, base("Worker log", body,
                              run_state=f"worker: {st['state']} · {st['pending']} pending"))
 
@@ -613,20 +742,15 @@ class Handler(BaseHTTPRequestHandler):
             dt_correct, dt_total = cur.fetchone()
             cur.execute(queries.ocr_accuracy_sql(type_clause_ctx))
             ocr_good, ocr_total = cur.fetchone()
-            # per-verdict breakdowns for the Figma-style score chunks (rings per
-            # Correct / Wrong for doctype; Correct / Acceptable / Wrong for ocr).
-            cur.execute(queries.doctype_breakdown_sql(type_clause_ctx))
-            dt_correct_b, dt_wrong, dt_total_b = cur.fetchone()
-            cur.execute(queries.ocr_breakdown_sql(type_clause_ctx))
-            ocr_correct_b, ocr_acceptable, ocr_wrong, ocr_total_b = cur.fetchone()
             conn.commit()
         doctype_acc_pct = round(100 * dt_correct / dt_total) if dt_total else 0
         ocr_acc_pct = round(100 * ocr_good / ocr_total) if ocr_total else 0
-        # breakdown numbers (authoritative denominators are the *_b totals; they
-        # match the accuracy totals but are read from the one-shot breakdown query
-        # so the chunk is internally consistent with its own rings).
-        ocr_correct_pct = round(100 * ocr_correct_b / ocr_total_b) if ocr_total_b else 0
-        ocr_acceptable_pct = round(100 * ocr_acceptable / ocr_total_b) if ocr_total_b else 0
+        # the three score chunks (shared with the detail pages via the same
+        # chunk templates + _score_chunk_vars)
+        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk_classify = render("chunk_classify.html", **chunk_vars)
+        chunk_ocr = render("chunk_ocr.html", **chunk_vars)
+        chunk_quality = render("chunk_quality.html", **chunk_vars)
         pending = status_counts.get("pending", 0)
 
         # "How many files left" bar: processed (done/none/skipped/error) vs
@@ -691,24 +815,13 @@ class Handler(BaseHTTPRequestHandler):
             c_total_files=c_total_files,
             ai_done_pct=ai_done_pct, ai_rest_pct=max(0, 100 - ai_done_pct),
             reviewed_pct=reviewed_pct, reviewed_rest_pct=max(0, 100 - reviewed_pct),
-            doctype_acc_pct=doctype_acc_pct, doctype_acc_correct=dt_correct, doctype_acc_total=dt_total,
-            doctype_acc_rest_pct=max(0, 100 - doctype_acc_pct),
-            ocr_acc_pct=ocr_acc_pct, ocr_acc_good=ocr_good, ocr_acc_total=ocr_total,
-            ocr_acc_rest_pct=max(0, 100 - ocr_acc_pct),
-            # Figma-style score-chunk breakdowns
-            doctype_acc_wrong=dt_wrong,
-            ocr_acc_correct=ocr_correct_b, ocr_acc_acceptable=ocr_acceptable,
-            ocr_acc_wrong=ocr_wrong,
-            ocr_correct_pct=ocr_correct_pct, ocr_acceptable_pct=ocr_acceptable_pct,
+            # the three score chunks (pre-rendered from the shared templates)
+            chunk_classify=chunk_classify, chunk_ocr=chunk_ocr,
+            chunk_quality=chunk_quality,
             stacked_bar=stacked_bar, status_list=status_list,
             legend=LEGEND_HTML,
             cards=cards_html, cards_header=cards_header, cards_more=cards_more,
             filter=esc(filt), view=esc(view),
-            # querystring for the /classify-score links (preserves type filters)
-            cs_qs=esc("?" + urlencode({k: v for k, v in
-                (("declared", declared), ("predicted", predicted),
-                 ("oov_only", "1" if oov_only else None)) if v}) if
-                (declared or predicted or oov_only) else ""),
             declared_opts=declared_opts, predicted_opts=predicted_opts,
             oov_checked="checked" if oov_only else "",
             index_summary=f"files: see counts above · worker pid may be running",
@@ -957,6 +1070,57 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"score": None}); return
         self._json({"score": res[0], "level": res[1]})
 
+    def _quality_pages(self):
+        """List every scored page at ?level=excellent|good|fair|poor|bad — the
+        drill-down behind the dashboard quality-chunk ring clicks. One row per
+        scored page, each linking to /review/<sha>."""
+        qs = self._qs()
+        level = qs.get("level") or ""
+        if level not in ("excellent", "good", "fair", "poor", "bad"):
+            self._html(404, base("Not found",
+                "<p>level must be excellent|good|fair|poor|bad.</p>"))
+            return
+        with connect() as conn, conn.cursor() as cur:
+            cur.execute("""SELECT fp.sha256, fp.page_no, f.page_count,
+                                  fp.quality_score, pf.txn_id, f.filename
+                           FROM file_pages fp
+                           JOIN files f ON f.sha256 = fp.sha256
+                           LEFT JOIN LATERAL (
+                               SELECT pf.txn_id FROM petition_files pf
+                               WHERE pf.sha256 = fp.sha256
+                               ORDER BY pf.declared_category LIMIT 1
+                           ) pf ON true
+                           WHERE fp.quality_level = %s
+                           ORDER BY fp.quality_score, fp.sha256, fp.page_no""",
+                        (level,))
+            rows = cur.fetchall()
+            conn.commit()
+        body_rows = []
+        for sha, pno, pgs, score, txn, fname in rows:
+            href = f"/review/{quote(sha)}"
+            txn_cell = (f"<td class='small mono'>"
+                        f"<a class='open' href='/txn/{quote(str(txn))}'>{esc(txn)}</a></td>"
+                        if txn else "<td class='small dim'>—</td>")
+            body_rows.append(
+                f"<tr><td class='small mono'>{esc(sha[:16])}…</td>"
+                f"{txn_cell}"
+                f"<td>page {esc(pno)} / {esc(pgs)}</td>"
+                f"<td class='small'>{esc(fname or '')}</td>"
+                f"<td><span class='qpill q-{esc(level)}'>◆ {score:.2f} {esc(level)}</span></td>"
+                f"<td><a href='{href}'>review</a></td></tr>")
+        if body_rows:
+            table = ("<table><thead><tr>"
+                     "<th>file (sha256)</th><th>txn_id</th><th>page</th>"
+                     "<th>filename</th><th>quality</th><th></th>"
+                     "</tr></thead><tbody>" + "".join(body_rows) + "</tbody></table>")
+        else:
+            table = (f"<div class='empty'>No pages scored <b>{esc(level)}</b> yet.</div>")
+        body = (f"<h3>Document quality — {esc(level)} pages</h3>"
+                f"<p class='small'>{len(rows)} page(s) · "
+                f"<a class='open' href='/dashboard'>← back to dashboard</a></p>"
+                + table)
+        self._html(200, base("Quality pages", body, nav_dash="active"))
+
     # ===== classify-score: doctype confusion matrix =====
     def _classify_score(self):
         """Per-page doc_types confusion matrix (human answer vs AI answer) behind
@@ -1044,11 +1208,56 @@ class Handler(BaseHTTPRequestHandler):
         back = "/dashboard?" + back_qs if back_qs else "/dashboard"
         filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
                        if (declared or predicted or oov_only) else "")
+        # score chunk (same numbers as the dashboard) + the type filter form
+        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk = render("chunk_classify.html", **chunk_vars)
+        form = _type_filter_form("/classify-score", declared, predicted, oov_only)
         body = (f"<h3>Classify score — doc_types confusion matrix (per page)</h3>"
                 f"<p class='small'>{total} page verdict(s) counted{filter_note} · "
                 f"<a class='open' href='{back}'>← back to dashboard</a></p>"
+                f"<div class='score-chunks'>{chunk}</div>"
+                f"<h3>Filter</h3>{form}"
                 + legend + table + unlabeled_note)
-        self._html(200, base("Classify score", body, nav_classify="active"))
+        self._html(200, base("Classify score", body, nav_dash="active"))
+
+    # ===== ocr-score: OCR / ADE detail page =====
+    def _ocr_score(self):
+        """OCR / ADE score detail: the score chunk (Correct/Acceptable/Wrong
+        rings, honoring the type filters) + the filter form. Each ring drills
+        into /verdict-pages?stage=ocr&verdict=…"""
+        qs = self._qs()
+        declared = qs.get("declared") or None
+        predicted = qs.get("predicted") or None
+        oov_only = qs.get("oov_only") == "1"
+        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk = render("chunk_ocr.html", **chunk_vars)
+        form = _type_filter_form("/ocr-score", declared, predicted, oov_only)
+        filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
+                       if (declared or predicted or oov_only) else "")
+        body = (f"<h3>OCR / ADE score — is the extracted data correct? (per page)</h3>"
+                f"<p class='small'>{chunk_vars['ocr_acc_total']} OCR page verdict(s) "
+                f"counted{filter_note} · "
+                f"<a class='open' href='/dashboard'>← back to dashboard</a></p>"
+                f"<div class='score-chunks'>{chunk}</div>"
+                "<h3>Filter</h3>" + form)
+        self._html(200, base("OCR / ADE score", body, nav_dash="active"))
+
+    # ===== quality-score: document quality detail page =====
+    def _quality_score_detail(self):
+        """Document quality score detail: the score chunk (a ring per DeQA-Doc
+        level + the score-range legend). No type filters here — quality is a
+        per-page-image property, independent of declared/predicted type; the
+        rings themselves are the level filter (each lists its pages)."""
+        chunk_vars = _score_chunk_vars(None, None, False)
+        chunk = render("chunk_quality.html", **chunk_vars)
+        st = QWORKER.status()
+        body = (f"<h3>Document quality score — DeQA-Doc per-page quality (1–5)</h3>"
+                f"<p class='small'>{chunk_vars['q_total']} page(s) scored · "
+                f"{chunk_vars['q_unscored']} unscored · quality worker: {esc(st['state'])}"
+                f" (<a class='open' href='/worker-log'>controls</a>) · "
+                f"<a class='open' href='/dashboard'>← back to dashboard</a></p>"
+                f"<div class='score-chunks'>{chunk}</div>")
+        self._html(200, base("Document quality score", body, nav_dash="active"))
 
     def _petition_legacy_redirect(self, pid_str: str):
         """Old links keyed by the internal petition id still work: look the

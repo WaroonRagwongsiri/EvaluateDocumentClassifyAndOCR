@@ -111,13 +111,16 @@ a.stat:hover{background:var(--accent-soft)}
    bordered panels, each a row of circular metric rings (one per verdict
    value) with a Total line below. Matches the dashboard's black-on-white,
    2px-rule design language. Rings are pure CSS conic-gradients (no JS). */
-.score-chunks{display:grid;grid-template-columns:repeat(2,1fr);gap:0;margin:0 0 22px;border:2px solid var(--rule-strong);background:var(--paper)}
-.score-chunk{padding:22px 26px;border-right:2px solid var(--rule-strong)}
-.score-chunk:last-child{border-right:none}
+/* single column — stacked full-width panels; consecutive wrappers join
+   flush (shared rule between them) like one continuous list */
+.score-chunks{display:grid;grid-template-columns:1fr;gap:0;margin:0 0 22px;border:2px solid var(--rule-strong);background:var(--paper)}
+.score-chunk{padding:22px 26px}
+.score-chunks + .score-chunks{margin-top:-22px;border-top:none}
 .score-chunk .score-head{font-weight:700;font-size:20px;letter-spacing:-.3px;color:var(--ink);line-height:1.2}
 .score-chunk .score-sub{font-size:12px;color:var(--muted);margin:3px 0 16px}
 .rings{display:flex;justify-content:center;align-items:flex-start;gap:36px;flex-wrap:wrap}
 .rings-3{gap:28px}
+.rings-5{gap:20px}
 .ring{display:flex;flex-direction:column;align-items:center;gap:9px}
 /* rings are clickable (drill-down to the matching page-verdict list) */
 a.ring{text-decoration:none;color:var(--ink);cursor:pointer;transition:opacity .12s}
@@ -141,6 +144,16 @@ a.ring:hover{opacity:.75}
 .ring-cap-correct{color:var(--vd-correct)}
 .ring-cap-acceptable{color:var(--vd-acceptable)}
 .ring-cap-wrong{color:var(--vd-wrong)}
+/* quality-level ring captions (mirror the .qpill.q-* palette below) */
+.ring-cap-excellent{color:var(--vd-correct)}
+.ring-cap-good{color:var(--vd-correct)}
+.ring-cap-fair{color:var(--vd-acceptable)}
+.ring-cap-poor{color:var(--vd-wrong)}
+.ring-cap-bad{color:var(--vd-wrong)}
+/* score-range legend table under the quality rings */
+.q-levels{margin:14px auto 0;border-collapse:collapse;font-size:12px}
+.q-levels th,.q-levels td{border:1px solid var(--rule-strong);padding:3px 10px;text-align:left}
+.q-levels th{background:var(--accent-soft);text-transform:uppercase;letter-spacing:.4px;font-size:10px}
 .score-total{margin-top:16px;text-align:center;font-size:13px;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
 /* Classify score chunk heading links to /classify-score (confusion matrix) —
    can't wrap the whole chunk because the rings inside are already links */
@@ -169,11 +182,6 @@ a.ring:hover{opacity:.75}
 .qpill.q-poor{background:rgba(192,57,43,.16);color:var(--vd-wrong);border-color:var(--vd-wrong)}
 .qpill.q-bad{background:var(--vd-wrong);color:#fff;border-color:var(--vd-wrong)}
 .qpill.q-pending{background:var(--accent-soft);color:var(--faint)}
-@media (max-width:820px){
-  .score-chunks{grid-template-columns:1fr}
-  .score-chunk{border-right:none;border-bottom:2px solid var(--rule-strong)}
-  .score-chunk:last-child{border-bottom:none}
-}
 
 /* ── Segmented horizontal bar (status breakdown + per-card progress). ── */
 .bar{display:flex;height:14px;overflow:hidden;background:var(--accent-soft);border:2px solid var(--rule-strong)}
@@ -391,7 +399,6 @@ a.open:hover{background:var(--accent-soft)}
   <nav>
     <a href="/" class="$nav_home">Petitions</a>
     <a href="/dashboard" class="$nav_dash">Dashboard</a>
-    <a href="/classify-score" class="$nav_classify">Classify score</a>
     <a href="/worker-log" target="_blank">Worker Log</a>
   </nav>
   <span class="runstate">$run_state</span>

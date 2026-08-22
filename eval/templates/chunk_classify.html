@@ -1,0 +1,15 @@
+<section class="score-chunk">
+  <a class="score-head score-head-link" href="/classify-score$cs_qs" title="confusion matrix (human vs AI, per page)">Classify score</a>
+  <div class="score-sub">is the doc_types classification right? (per page) · <a class="open" href="/classify-score$cs_qs">confusion matrix →</a></div>
+  <div class="rings rings-2">
+    <a class="ring ring-correct" href="/verdict-pages?stage=doctype&verdict=correct" title="list pages marked Correct">
+      <div class="ring-disc" style="--p:$doctype_acc_pct;--c:var(--vd-correct)">$doctype_acc_correct</div>
+      <div class="ring-cap ring-cap-correct">Correct</div>
+    </a>
+    <a class="ring ring-wrong" href="/verdict-pages?stage=doctype&verdict=wrong" title="list pages marked Wrong">
+      <div class="ring-disc ring-disc-solid" style="--c:var(--vd-wrong)">$doctype_acc_wrong</div>
+      <div class="ring-cap ring-cap-wrong">Wrong</div>
+    </a>
+  </div>
+  <div class="score-total">Total: $doctype_acc_total</div>
+</section>

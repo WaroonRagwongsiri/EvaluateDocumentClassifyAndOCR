@@ -5,7 +5,8 @@ attachments. A plain HTTP server (Python stdlib, no web framework) serves a peti
 list (the landing page), a dashboard (worker controls + status filters), and a
 per-document two-stage review (classify, then OCR per page). A separate AI worker
 process (spawned by the server) classifies page 1 and OCRs every page of each unique
-file. See `PLAN.md` for the full design.
+file. A second quality worker batch-scores every page image with DeQA-Doc (1–5
+document quality). See `PLAN.md` for the full design.
 
 The AI primitives are vendored (copied) from `wind/doc_validator_webui`:
 classification prompt/parser + per-page OCR + the OpenAI-compatible client. This
@@ -67,18 +68,19 @@ tmux attach -t evaluate_classify_ocr
 
 Open the app in a browser: **http://localhost:8082** (`/` = petition list).
 
-> **No auto-start:** booting the server does **not** start the worker. The petition
-> list and dashboard render against DB state immediately; you Start the worker
-> explicitly from the dashboard.
+> **No auto-start:** booting the server does **not** start either worker. The petition
+> list and dashboard render against DB state immediately; you Start the workers
+> explicitly from `/worker-log`.
 
-## Run the QualityScore service (inside tmux)
+## Run the QualityScore service (optional — usually automatic)
 
-A separate long-lived process scores page-image quality with **DeQA-Doc-Overall**
-(HuggingFace `mapo80/DeQA-Doc-Overall` — fully fine-tuned mPLUG-Owl2-7B, merged
-weights, no LoRA), on GPU 4. The service script lives at the repo root
-(`scorer_service.py`); the DeQA-Score code and model weights live under
-`QualityScore/` (a git submodule of the upstream repo). See
-`QualityScore/Readme.md` for details.
+Page-image quality is scored with **DeQA-Doc-Overall** (HuggingFace
+`mapo80/DeQA-Doc-Overall` — fully fine-tuned mPLUG-Owl2-7B, merged weights, no
+LoRA), on GPU 4. `eval.quality` spawns `scorer_service.py` itself as a
+subprocess on first use (on-demand pill fill, or the quality worker below), so
+you normally don't run it by hand. The DeQA-Score code and model weights live
+under `QualityScore/` (a git submodule of the upstream repo). See
+`QualityScore/Readme.md` for details. To watch the JSONL protocol by hand:
 
 ```bash
 tmux new-session -s quality_score
@@ -88,17 +90,39 @@ CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py
 
 The model dir and torch device are configurable in `.env` (`QUALITY_MODEL`,
 `QUALITY_DEVICE`) — no CLI flags needed for the default setup.
-```bash
-tmux attach -t quality_score     # attach to watch the JSONL protocol
-```
 
 It prints one `{"ready": true, …}` line once the model is loaded, then speaks
 JSON on stdin/stdout (one `{"id", "image"}` in → one `{"id", "score", …}` out).
 Stop it gracefully by killing the PID (SIGTERM) — GPU 4 memory is freed on exit.
 
+## Document quality scoring
+
+Every page carries a DeQA-Doc quality score (1.0–5.0) mapped to a level:
+
+| Score Range | Quality Level | Description |
+|---|---|---|
+| 4.5 - 5.0 | **Excellent** | Perfect quality, no visible defects |
+| 3.5 - 4.5 | **Good** | Minor imperfections, highly readable |
+| 2.5 - 3.5 | **Fair** | Noticeable issues but still usable |
+| 1.5 - 2.5 | **Poor** | Significant quality problems |
+| 1.0 - 1.5 | **Bad** | Severe degradation, hard to read |
+
+Scores fill two ways, both persisting into `file_pages.quality_*`:
+
+- **On demand** — a review page's quality pill (`◆ …`) scores its page lazily
+  via `GET /quality/<sha>/<page>` when first viewed.
+- **Quality worker** — Start it on `/worker-log` ("Document quality score
+  worker" section). It batch-scores every unscored renderable page oldest-first
+  (`/qrun/start|stop|continue`, status at `/qrun/status`), logging to
+  `/tmp/eval_quality_worker.stdout.log`. Graceful stop via `quality_want_stop`
+  in `run_control`; a page that fails 3 times is marked `quality_level='error'`
+  and skipped. The dashboard's quality chunk (rings per level) links each level
+  to `/quality-pages?level=<level>` for the drill-down list.
+
 ## Using the app
 
-There are two pages, linked in the header:
+There are two pages linked in the header (petition list, dashboard), plus the
+worker-log page and the review flow:
 
 1. **Petition list (`/`)** — the landing page. One row per petition with its id
    (link to detail), full `txn_id`, `document_no`, `state`, file count, and an
@@ -107,15 +131,12 @@ There are two pages, linked in the header:
    human-done / human-say-AI-wrong / still-not-done) and a `txn_id`/`document_no`
    search box narrow the list. This is the attachment_browser.py design: Segoe UI,
    deep-blue header, monospaced ids, copy `⧉` buttons.
-2. **Dashboard (`/dashboard`)** — worker controls + status filters:
-   - **Start** spawns the worker; it claims pending files, classifies page 1, then
-     OCRs every page. **Stop** sets a `want_stop` flag → the worker finishes the
-     in-flight page, commits, and exits 0 (graceful). **Continue** re-spawns it;
-     pending rows resume automatically. `/run/status` returns JSON for polling.
-     **Retry errored** resets every file with `ai_class_status='error'` (or any
-     errored page) back to `pending`, clears its verdicts, and auto-starts the
-     worker — use this after the LLM endpoint recovers from an outage (a plain
-     Continue won't reclaim error files whose pages are also errored).
+2. **Dashboard (`/dashboard`)** — status filters + score chunks:
+   - **Score chunks** — Classify score (Correct/Wrong rings + confusion-matrix
+     link), OCR / ADE score (Correct/Acceptable/Wrong rings), and Document
+     quality score (a ring per level: Excellent/Good/Fair/Poor/Bad + the
+     score-range legend). Each ring drills into the matching page list
+     (`/verdict-pages` or `/quality-pages`).
    - Four named filters, each with a live count:
      - **AI-done** — classification settled (done/none/error) AND all pages OCR'd.
      - **Human-done** — every declared-type context of the file fully reviewed.
@@ -124,10 +145,25 @@ There are two pages, linked in the header:
      Type filters (declared / predicted category, OOV-only) AND-compose with the
      selected status filter. Each filter can be browsed as petitions or as unique
      files (`view=petitions|files`).
-3. **Petition detail** (`/petition/<id>`) — the files in one petition, with each
+3. **Worker log (`/worker-log`)** — controls + log tails for both workers:
+   - **AI worker (classify + extract)** — **Start** spawns the worker; it claims
+     pending files, classifies page 1, then runs the per-filetype extractor on
+     every page. **Stop** sets a `want_stop` flag → the worker finishes the
+     in-flight page, commits, and exits 0 (graceful). **Continue** re-spawns it;
+     pending rows resume automatically. `/run/status` returns JSON for polling.
+     **Retry errored** resets every file with `ai_class_status='error'` (or any
+     errored page) back to `pending`, clears its verdicts, and auto-starts the
+     worker — use this after the LLM endpoint recovers from an outage (a plain
+     Continue won't reclaim error files whose pages are also errored).
+     **Re-index** re-runs the CSV+JSON load (idempotent). Log:
+     `/tmp/eval_worker.stdout.log`.
+   - **Document quality score worker** — same Start/Stop/Continue shape
+     (`/qrun/*`, status at `/qrun/status`), pending = unscored renderable
+     pages. Log: `/tmp/eval_quality_worker.stdout.log`.
+4. **Petition detail** (`/petition/<id>`) — the files in one petition, with each
    file's sha256, name, declared type, `txn_id`, source table/column, AI predicted
    type + status, and human verdict; links into per-file review.
-4. **Review** (`/review/<sha>?declared=<type>`):
+5. **Review** (`/review/<sha>?declared=<type>`):
    - **Stage 1 — Classification:** judge **Correct | Wrong** (+ `corrected_type`
      when wrong). The auto predicted-vs-declared comparison is skipped for OOV
      declared types (the classifier can't predict them).
@@ -136,7 +172,7 @@ There are two pages, linked in the header:
      Bad** + optional comment.
    - **Re-run** button resets that one file (class + all pages) to `pending`,
      clears its verdicts, and auto-starts the worker if idle. Rate-limited 30 s/file.
-5. Flipping classification back to `wrong` after entering OCR verdicts deletes the
+6. Flipping classification back to `wrong` after entering OCR verdicts deletes the
    stale OCR verdicts for that context (OCR is meaningless once class is wrong).
 
 ## CLI entry points
@@ -145,6 +181,7 @@ There are two pages, linked in the header:
 |---|---|
 | `uv run eval-index` | apply schema + load CSV files + JSON petitions (idempotent) |
 | `uv run eval-worker` | run the AI worker once until no pending work / `want_stop` |
+| `uv run python -m eval.quality_worker` | run the quality-score worker once until no unscored pages / `quality_want_stop` |
 | `uv run python -m eval.server` | the HTTP server (`/` petition list, `/dashboard` controls, review UI; spawns worker) |
 
 The worker can also be run by hand (`uv run eval-worker`) for debugging; it reads
@@ -168,7 +205,12 @@ worker interoperate.
 ## Data model (quick)
 
 - `files` (one row per unique sha256): AI classification lives here (once per file).
-- `file_pages` (one row per page): AI OCR lives here.
+- `file_pages` (one row per page): AI OCR lives here, plus the DeQA-Doc quality
+  columns (`quality_score`/`quality_level`/`quality_probs`/`quality_model`/
+  `quality_at`; `quality_level='error'` = tried and skipped by the quality worker).
+- `run_control` (single row): stop flags + state for both workers — `want_stop`/
+  `state`/`last_exit_code` for the AI worker, `quality_want_stop`/`quality_state`/
+  `quality_last_exit_code` for the quality worker.
 - `petitions` / `petition_files`: many-to-many; the same file can appear in
   multiple petitions under different declared types — each `(sha256,
   declared_category)` is a distinct correctness question.

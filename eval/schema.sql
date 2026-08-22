@@ -218,3 +218,9 @@ CREATE TABLE IF NOT EXISTS run_control (
 
 -- Bootstrap the single run_control row.
 INSERT INTO run_control (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- Quality-score worker controls (same single row; separate stop flag + state
+-- so the AI worker and the quality worker stop/start independently).
+ALTER TABLE run_control ADD COLUMN IF NOT EXISTS quality_want_stop boolean NOT NULL DEFAULT false;
+ALTER TABLE run_control ADD COLUMN IF NOT EXISTS quality_state      text NOT NULL DEFAULT 'idle';
+ALTER TABLE run_control ADD COLUMN IF NOT EXISTS quality_last_exit_code int;

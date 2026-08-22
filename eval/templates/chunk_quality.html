@@ -1,0 +1,37 @@
+<section class="score-chunk">
+  <a class="score-head score-head-link" href="/quality-score" title="document quality score detail">Document quality score</a>
+  <div class="score-sub">DeQA-Doc per-page quality (1–5) · <span class="dim">$q_unscored unscored</span> · <a class="open" href="/quality-score">detail →</a></div>
+  <div class="rings rings-5">
+    <a class="ring" href="/quality-pages?level=excellent" title="4.5 – 5.0 · Perfect quality, no visible defects">
+      <div class="ring-disc" style="--p:$q_excellent_pct;--c:var(--vd-correct)">$q_excellent</div>
+      <div class="ring-cap ring-cap-excellent">Excellent</div>
+    </a>
+    <a class="ring" href="/quality-pages?level=good" title="3.5 – 4.5 · Minor imperfections, highly readable">
+      <div class="ring-disc" style="--p:$q_good_pct;--c:var(--vd-correct)">$q_good</div>
+      <div class="ring-cap ring-cap-good">Good</div>
+    </a>
+    <a class="ring" href="/quality-pages?level=fair" title="2.5 – 3.5 · Noticeable issues but still usable">
+      <div class="ring-disc" style="--p:$q_fair_pct;--c:var(--vd-acceptable)">$q_fair</div>
+      <div class="ring-cap ring-cap-fair">Fair</div>
+    </a>
+    <a class="ring" href="/quality-pages?level=poor" title="1.5 – 2.5 · Significant quality problems">
+      <div class="ring-disc" style="--p:$q_poor_pct;--c:var(--vd-wrong)">$q_poor</div>
+      <div class="ring-cap ring-cap-poor">Poor</div>
+    </a>
+    <a class="ring" href="/quality-pages?level=bad" title="1.0 – 1.5 · Severe degradation, hard to read">
+      <div class="ring-disc ring-disc-solid" style="--c:var(--vd-wrong)">$q_bad</div>
+      <div class="ring-cap ring-cap-bad">Bad</div>
+    </a>
+  </div>
+  <div class="score-total">Total scored: $q_total</div>
+  <table class="q-levels">
+    <thead><tr><th>Score Range</th><th>Quality Level</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td>4.5 - 5.0</td><td><strong>Excellent</strong></td><td>Perfect quality, no visible defects</td></tr>
+      <tr><td>3.5 - 4.5</td><td><strong>Good</strong></td><td>Minor imperfections, highly readable</td></tr>
+      <tr><td>2.5 - 3.5</td><td><strong>Fair</strong></td><td>Noticeable issues but still usable</td></tr>
+      <tr><td>1.5 - 2.5</td><td><strong>Poor</strong></td><td>Significant quality problems</td></tr>
+      <tr><td>1.0 - 1.5</td><td><strong>Bad</strong></td><td>Severe degradation, hard to read</td></tr>
+    </tbody>
+  </table>
+</section>

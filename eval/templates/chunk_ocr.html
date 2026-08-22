@@ -1,0 +1,19 @@
+<section class="score-chunk">
+  <a class="score-head score-head-link" href="/ocr-score$cs_qs" title="OCR / ADE score detail">OCR / ADE score</a>
+  <div class="score-sub">is the extracted data correct? (per page) · <a class="open" href="/ocr-score$cs_qs">detail →</a></div>
+  <div class="rings rings-3">
+    <a class="ring ring-correct" href="/verdict-pages?stage=ocr&verdict=correct" title="list pages marked Correct">
+      <div class="ring-disc" style="--p:$ocr_correct_pct;--c:var(--vd-correct)">$ocr_acc_correct</div>
+      <div class="ring-cap ring-cap-correct">Correct</div>
+    </a>
+    <a class="ring ring-acceptable" href="/verdict-pages?stage=ocr&verdict=acceptable" title="list pages marked Acceptable">
+      <div class="ring-disc" style="--p:$ocr_acceptable_pct;--c:var(--vd-acceptable)">$ocr_acc_acceptable</div>
+      <div class="ring-cap ring-cap-acceptable">Acceptable</div>
+    </a>
+    <a class="ring ring-wrong" href="/verdict-pages?stage=ocr&verdict=wrong" title="list pages marked Wrong">
+      <div class="ring-disc ring-disc-solid" style="--c:var(--vd-wrong)">$ocr_acc_wrong</div>
+      <div class="ring-cap ring-cap-wrong">Wrong</div>
+    </a>
+  </div>
+  <div class="score-total">Total: $ocr_acc_total</div>
+</section>
