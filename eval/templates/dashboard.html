@@ -15,7 +15,7 @@
     <span class="stat-label">Reviewed</span>
     <div class="bar"><div class="seg seg-done" style="width:$reviewed_pct%"></div><div class="seg" style="width:$reviewed_rest_pct%"></div></div>
   </a>
-  <a class="stat" href="/run/retry_errors" style="cursor:default">
+  <a class="stat" href="/worker-log" title="Retry errored files (form on worker-log)">
     <span class="stat-warn">$c_error</span>
     <span class="stat-label">Errors</span>
     <span class="stat-sub">class or page errored · Retry on worker-log</span>
@@ -46,13 +46,8 @@ $chunk_quality
   <a class="filter $f_wrong_active" href="/?filter=human_say_ai_wrong">Human-say-AI-wrong <span class="count">$c_wrong</span></a>
   <a class="filter $f_not_done_active" href="/?filter=still_not_done">Still-not-done <span class="count">$c_not_done</span></a>
   <a class="filter" href="/review-queue">Needs review <span class="count">$c_review_queue</span></a>
-  <a class="filter" href="/worker-log" target="_blank">⚙ Worker controls + log</a>
+  <a class="filter" href="/worker-log">⚙ Worker controls + log</a>
 </div>
-
-<h3>How many files left</h3>
-$stacked_bar
-<ul class="stat-list">$status_list</ul>
-$legend
 
 <h3>Petitions $cards_header</h3>
 <div class="cards">

@@ -495,11 +495,11 @@ class Handler(BaseHTTPRequestHandler):
     def _route_post(self):
         path = urlparse(self.path).path
         if path == "/run/start":
-            WORKER.start(); self._redirect("/")
+            WORKER.start(); self._redirect("/worker-log")
         elif path == "/run/stop":
-            WORKER.stop(); self._redirect("/")
+            WORKER.stop(); self._redirect("/worker-log")
         elif path == "/run/continue":
-            WORKER.cont(); self._redirect("/")
+            WORKER.cont(); self._redirect("/worker-log")
         elif path == "/run/retry_errors":
             self._post_retry_errors()
         elif path == "/qrun/start":
@@ -1082,11 +1082,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         with connect() as conn, conn.cursor() as cur:
             cur.execute("""SELECT fp.sha256, fp.page_no, f.page_count,
-                                  fp.quality_score, pf.txn_id, f.filename
+                                  fp.quality_score, pf.txn_id, pf.declared_category,
+                                  f.filename
                            FROM file_pages fp
                            JOIN files f ON f.sha256 = fp.sha256
                            LEFT JOIN LATERAL (
-                               SELECT pf.txn_id FROM petition_files pf
+                               SELECT pf.txn_id, pf.declared_category FROM petition_files pf
                                WHERE pf.sha256 = fp.sha256
                                ORDER BY pf.declared_category LIMIT 1
                            ) pf ON true
@@ -1096,8 +1097,9 @@ class Handler(BaseHTTPRequestHandler):
             rows = cur.fetchall()
             conn.commit()
         body_rows = []
-        for sha, pno, pgs, score, txn, fname in rows:
-            href = f"/review/{quote(sha)}"
+        for sha, pno, pgs, score, txn, declared, fname in rows:
+            href = (f"/review/{quote(sha)}?declared={quote(declared)}"
+                    if declared else f"/review/{quote(sha)}")
             txn_cell = (f"<td class='small mono'>"
                         f"<a class='open' href='/txn/{quote(str(txn))}'>{esc(txn)}</a></td>"
                         if txn else "<td class='small dim'>—</td>")
@@ -1418,10 +1420,17 @@ class Handler(BaseHTTPRequestHandler):
             # (image, no verdict forms — there is no extract to grade); only
             # truly non-renderable files get the bare note.
             if kind in ("pdf", "image") and pgs:
+                with connect() as conn, conn.cursor() as cur:
+                    cur.execute("SELECT page_no, quality_score, quality_level "
+                                "FROM file_pages WHERE sha256=%s AND quality_score IS NOT NULL",
+                                (sha,))
+                    pv_q = {pno: (s, lv) for pno, s, lv in cur.fetchall()}
+                    conn.commit()
                 page_sections = "".join(
                     f"<div class='doc-section review-card'>"
                     f"<div class='doc-section-h'>Page {n} "
-                    f"<span class='small dim'>(preview only — no extractor for this declared type)</span></div>"
+                    f"<span class='small dim'>(preview only — no extractor for this declared type)</span> "
+                    f"· quality: {_quality_pill(sha, n, pv_q.get(n))}</div>"
                     f"<div class='page-body'><div class='page-img'>"
                     f"<img src='/page/{quote(sha)}/{n}' class='zoomable' data-page='{n}' alt='page {n}'>"
                     f"</div></div></div>"
@@ -1794,6 +1803,18 @@ def _doc_types_block(ejson, sha: str, declared: str, pno: int,
             f"</div>")
 
 
+def _quality_pill(sha: str, pno: int, quality: tuple[float, str] | None) -> str:
+    """DeQA-Doc quality pill: stored score renders immediately; unscored pages
+    get a placeholder span the client JS fills via GET /quality/<sha>/<pno>
+    (the endpoint scores on demand and caches in file_pages)."""
+    if quality:
+        return (f"<span class='qpill q-{quality[1]}' "
+                f"title='DeQA-Doc page quality (1-5)'>◆ {quality[0]:.2f} {esc(quality[1])}</span>")
+    return (f"<span class='qpill q-pending' data-quality-sha='{esc(sha)}' "
+            f"data-quality-page='{pno}' "
+            f"title='DeQA-Doc page quality (1-5)'>◆ …</span>")
+
+
 def _page_section(sha: str, declared: str, pno: int, ocr_row: tuple,
                   doctype_verdict: tuple | None, ocr_verdict: tuple | None,
                   quality: tuple[float, str] | None = None) -> str:
@@ -1850,13 +1871,7 @@ def _page_section(sha: str, declared: str, pno: int, ocr_row: tuple,
     # DeQA-Doc quality pill: stored score renders immediately; unscored pages
     # get a placeholder span the client JS fills via GET /quality/<sha>/<pno>
     # (the endpoint scores on demand and caches in file_pages).
-    if quality:
-        q_pill = (f"<span class='qpill q-{quality[1]}' "
-                  f"title='DeQA-Doc page quality (1-5)'>◆ {quality[0]:.2f} {esc(quality[1])}</span>")
-    else:
-        q_pill = (f"<span class='qpill q-pending' data-quality-sha='{esc(sha)}' "
-                  f"data-quality-page='{pno}' "
-                  f"title='DeQA-Doc page quality (1-5)'>◆ …</span>")
+    q_pill = _quality_pill(sha, pno, quality)
 
     header = (f"Page {pno} · Extract <span class='{_status_dot(ostatus)}'>{esc(ostatus)}</span> "
               f"({round(olat, 2) if olat else '—'}s)"
