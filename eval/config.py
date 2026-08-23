@@ -76,6 +76,12 @@ DOC_ROOT: Path = Path(
     )
 )
 
+# --- Raw-petition browser (elicense-db-ui /api/petition mock browser) --------
+# Base URL of the GET-mock browser service; the globe buttons next to txn_ids
+# link to {PETITION_API_BASE}/api/petition?name=GET_<file>.json using the
+# filename mapped from MOCK_ROOT/manifest.jsonl.
+PETITION_API_BASE: str = os.environ.get("PETITION_API_BASE", "http://localhost:8765")
+
 # --- filtered.csv location (project root) ---
 CSV_PATH: Path = Path(__file__).resolve().parent.parent / "filtered.csv"
 

@@ -18,7 +18,7 @@
   /* Human verdict — FILLED PILL family. Semantic green/red/amber. */
   --vd-correct:#2f7d4f; --vd-wrong:#c0392b; --vd-acceptable:#c98a1e;
   /* special */
-  --oov:#5a4a8a; --found:#2f7d4f; --missing:#c0392b;
+  --found:#2f7d4f; --missing:#c0392b;
 }
 *{box-sizing:border-box}
 html{background:var(--bg)}
@@ -63,6 +63,13 @@ td.pid .ln{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .cp{border:1px solid var(--rule-strong);background:var(--paper);padding:0 6px;cursor:pointer;font-size:11px;line-height:1.6;color:var(--muted);font-family:ui-monospace,Menlo,Consolas,monospace;transition:all .12s}
 .cp:hover{background:var(--ink);border-color:var(--ink);color:#fff}
 .cp.done{background:var(--st-done);border-color:var(--st-done);color:#fff}
+/* globe button (a.cp.gl): opens the raw-petition browser in a new tab; shares
+   the .cp look, sized to the ⧉ copy button */
+a.cp.gl{display:inline-flex;align-items:center;justify-content:center;text-decoration:none;padding:0 4px}
+.cp.gl svg{width:12px;height:12px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+/* review page <h2>: TXN heading links to /txn/<uuid> */
+h2 a.h-txn{color:inherit;text-decoration:none;border-bottom:1px dotted}
+h2 a.h-txn:hover{border-bottom-style:solid}
 
 /* ── AI/machine status: DOT family (small filled dot + label). ── */
 .dot{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--ink-2);white-space:nowrap;line-height:1.5;font-family:ui-monospace,Menlo,Consolas,monospace;letter-spacing:.2px;text-transform:lowercase}
@@ -129,15 +136,8 @@ a.ring:hover{opacity:.75}
   display:flex;align-items:center;justify-content:center;
   font-weight:700;font-size:26px;color:var(--c,#000);line-height:1;
   font-variant-numeric:tabular-nums;letter-spacing:-.5px;
-  background:
-    radial-gradient(closest-side,var(--paper) 62%, transparent 63%),
-    conic-gradient(var(--c,#000) calc(var(--p,0) * 1%), var(--accent-soft) 0);
+  background:var(--paper);
   border:2px solid var(--rule-strong)
-}
-/* solid disc variant (for the 'wrong' ring, which has no share-of-total arc —
-   it just shows the raw count on a flat color disc). */
-.ring-disc.ring-disc-solid{
-  background:var(--c,#000);color:#fff;border-color:var(--c,#000)
 }
 .ring-cap{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px}
 .ring-cap-correct{color:var(--vd-correct)}
@@ -231,7 +231,6 @@ a.ring:hover{opacity:.75}
 .pill-correct{background:rgba(47,125,79,.14);border-color:var(--vd-correct);color:var(--vd-correct)}
 .pill-wrong{background:rgba(192,57,43,.14);border-color:var(--vd-wrong);color:var(--vd-wrong)}
 .pill-acceptable{background:rgba(201,138,30,.14);border-color:var(--vd-acceptable);color:var(--vd-acceptable)}
-.pill-oov{background:rgba(90,74,138,.14);border-color:var(--oov);color:var(--oov)}
 .pill-info{background:var(--accent-soft);border-color:var(--steel);color:var(--steel)}
 
 /* chips / filter bar — 4px black-bordered boxes; active = filled black. */
@@ -315,6 +314,8 @@ a.open:hover{background:var(--accent-soft)}
 
 /* ── ck-modal: Request Body modal ── */
 .ck-body-btn{font:inherit;padding:6px 14px;border:2px solid var(--rule-strong);background:var(--paper);color:var(--ink);cursor:pointer;font-size:14px;font-weight:600;transition:background .12s}
+/* the Elicense Approval Support System link reuses the button look */
+a.ck-body-btn{display:inline-block;text-decoration:none;margin-left:6px}
 .ck-body-btn:hover{background:var(--accent-soft)}
 .ck-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:30px 20px;overflow-y:auto}
 .ck-modal{background:var(--paper);border:2px solid var(--rule-strong);max-width:1100px;width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 12px 50px rgba(0,0,0,.3)}

@@ -25,6 +25,10 @@ repo depends on wind only as a one-time copy source, not at runtime.
   this box `…/แกะapiระบบElicense-ดึงจากDB` under `/home/user/…`.
 - Province/district/subdistrict master-data JSONs for the request-body modal —
   set `GEO_MASTER_DIR` in `.env` (`…/Elicense-network-collection`).
+- The raw-petition browser (elicense-db-ui) for the globe / Elicense links —
+  set `PETITION_API_BASE` in `.env` (default `http://localhost:8765`). Its
+  `manifest.jsonl` inside `MOCK_ROOT` supplies the txn_id → `GET_*.json`
+  filename mapping those links use.
 - A reachable OpenAI-compatible LLM endpoint (`LLM_ENDPOINT` / `MODEL_API_KEY` /
   `MODEL_NAME` in `.env`). Default points at `localhost:4000`.
 
@@ -130,19 +134,22 @@ worker-log, score-detail, and review-queue pages and the review flow:
    done / none / error / skipped / pending. Filter chips (all / AI-done /
    human-done / human-say-AI-wrong / still-not-done) and a `txn_id`/`document_no`
    search box narrow the list. This is the attachment_browser.py design: Segoe UI,
-   deep-blue header, monospaced ids, copy `⧉` buttons.
+   deep-blue header, monospaced ids, copy `⧉` buttons. A small **globe** button
+   next to the txn_id opens that petition's raw GET-mock JSON in the
+   raw-petition browser (new tab) when the txn has a `manifest.jsonl` entry.
 2. **Dashboard (`/dashboard`)** — status filters + score chunks:
-   - **Score chunks** — Classify score (Correct/Wrong rings + confusion-matrix
-     link), OCR / ADE score (Correct/Acceptable/Wrong rings), and Document
-     quality score (a ring per level: Excellent/Good/Fair/Poor/Bad + the
-     score-range legend). Each ring drills into the matching page list
+   - **Score chunks** — Classify score (Correct/Wrong count discs +
+     confusion-matrix link), OCR / ADE score (Correct/Acceptable/Wrong count
+     discs), and Document quality score (a disc per level:
+     Excellent/Good/Fair/Poor/Bad + the score-range legend). Each disc drills
+     into the matching page list
      (`/verdict-pages` or `/quality-pages`).
    - Four named filters, each with a live count:
      - **AI-done** — classification settled (done/none/error) AND all pages OCR'd.
      - **Human-done** — every declared-type context of the file fully reviewed.
      - **Human-say-AI-wrong** — any verdict is `wrong` (class) or `bad` (OCR).
      - **Still-not-done** — the remaining backlog (not AI-done).
-     Type filters (declared / predicted category, OOV-only) AND-compose with the
+     Type filters (declared / predicted category) AND-compose with the
      selected status filter. Each filter can be browsed as petitions or as unique
      files (`view=petitions|files`). The **Errors** card links here (the retry
      form lives on `/worker-log`). Score-chunk heads link to their detail
@@ -175,15 +182,19 @@ worker-log, score-detail, and review-queue pages and the review flow:
    - **Document quality score worker** — same Start/Stop/Continue shape
      (`/qrun/*`, status at `/qrun/status`), pending = unscored renderable
      pages. Log: `/tmp/eval_quality_worker.stdout.log`.
-5. **Petition detail** (`/petition/<id>`) — the files in one petition, with each
-   file's sha256, name, declared type, `txn_id`, source table/column, AI predicted
-   type + status, and human verdict; links into per-file review.
+5. **Petition detail** (`/txn/<txn_id>`, legacy `/petition/<id>` redirects) —
+   the files in one petition, with each file's sha256, name, declared type,
+   `txn_id`, source table/column, AI predicted type + status, and human
+   verdict; links into per-file review. The header panel has a **📋 Request
+   body** button (modal of the stored GET-mock JSON) and, when the txn has a
+   `manifest.jsonl` entry, an **🌐 Elicense Approval Support System** button
+   opening the raw petition in the browser service.
 6. **Review** (`/review/<sha>?declared=<type>` — `declared` is required):
+   - The `TXN <uuid>` page heading links to that txn's detail page.
    - Every page card (with or without extractor output) shows its **quality
      pill** (`◆ score level`); unscored pills fill lazily on view.
    - **Stage 1 — Classification:** judge **Correct | Wrong** (+ `corrected_type`
-     when wrong). The auto predicted-vs-declared comparison is skipped for OOV
-     declared types (the classifier can't predict them).
+     when wrong).
    - **Stage 2 — OCR** appears only after a `correct` classification verdict is
      saved. For each page: AI OCR text vs the page image → **Correct | Acceptable |
      Bad** + optional comment.
@@ -219,6 +230,7 @@ worker interoperate.
 | `MOCK_ROOT` | `…/แกะapiระบบElicense-ดึงจากDB` | GET-mock JSON tree (petition metadata). Code default is `/home/admins/…`; `.env` overrides to `/home/user/…` |
 | `DOC_ROOT` | `/home/admins/aiProject/eLicenseDocuments/miid-attachment-prod` | local attachment tree; CSV filenames are rebased under this. `.env` overrides to `/home/user/aiProject/elicenseDocuments/…` (lowercase) |
 | `GEO_MASTER_DIR` | `/home/admins/…/Elicense-network-collection` | province/district/subdistrict master-data JSONs for the request-body modal. `.env` overrides to `/home/user/…` |
+| `PETITION_API_BASE` | `http://localhost:8765` | base URL of the raw-petition browser; the globe / Elicense buttons link to `{base}/api/petition?name=GET_*.json` via the txn map from `MOCK_ROOT/manifest.jsonl` |
 | `HTTP_PORT` | `8080` | server port (use `8082` — 8080 is taken on this box) |
 
 ## Data model (quick)
@@ -234,9 +246,8 @@ worker interoperate.
   multiple petitions under different declared types — each `(sha256,
   declared_category)` is a distinct correctness question.
 - `verdicts`: human review, keyed by `(sha256, declared_category, page_no)` where
-  `page_no IS NULL` = classification and `page_no = N` = OCR page N. OOV is a
-  derived property of the declared type (not in the 19 classifiable types), not
-  a stored value. AI output carries no confidence; the full `do_chat` dict is
+  `page_no IS NULL` = classification and `page_no = N` = OCR page N. AI output
+  carries no confidence; the full `do_chat` dict is
   persisted in `*_raw` JSONB for later re-scoring.
 
 See `PLAN.md` for the full spec and `schema.dbml` for the DDL reference.

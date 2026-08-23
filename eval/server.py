@@ -179,13 +179,70 @@ def _enum_labels(enum_name: str) -> list[str]:
         return [r[0] for r in cur.fetchall()]
 
 
-def _score_chunk_vars(declared, predicted, oov_only) -> dict:
+# --- txn_id -> raw-petition (GET-mock) filename map ---------------------------
+# manifest.jsonl (extract_all.py output) sits in MOCK_ROOT and gives txn_id ->
+# file stem directly; the browser service serves it as /api/petition?name=.
+# Same approach as the DEQA quality UI's load_txn_map. Computed once, lazily.
+_TXN_NAMES: dict[str, str] | None = None
+_TXN_NAMES_LOCK = threading.Lock()
+
+# lucide "globe" icon (inline SVG; no icon package in this project)
+_GLOBE_SVG = ("\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"")
+
+
+def _txn_names() -> dict[str, str]:
+    global _TXN_NAMES
+    with _TXN_NAMES_LOCK:
+        if _TXN_NAMES is None:
+            names: dict[str, str] = {}
+            manifest = config.MOCK_ROOT / "manifest.jsonl"
+            try:
+                with open(manifest, encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            r = json.loads(line)
+                        except ValueError:
+                            continue
+                        name = r.get("file") or ""
+                        if r.get("txn_id") and name:
+                            if not name.startswith("GET_"):
+                                name = "GET_%s.json" % name
+                            names[str(r["txn_id"])] = name
+            except OSError as exc:
+                log.warning("txn name map unavailable (%s): %s", manifest, exc)
+            _TXN_NAMES = names
+        return _TXN_NAMES
+
+
+def _petition_link(txn, cls: str = "cp gl", label: str | None = None) -> str:
+    """Anchor opening the raw-petition browser for this txn's GET-mock JSON.
+    Empty string when the txn has no manifest entry (button hidden). txn may
+    arrive as a str (list pages cast ::text) or uuid.UUID (the txn detail page
+    reads petitions.txn_id raw) — normalize before the lookup. Default look is
+    the small globe button; the txn detail panel passes cls/label for the
+    ck-body-btn-styled variant."""
+    if not txn:
+        return ""
+    name = _txn_names().get(str(txn))
+    if not name:
+        return ""
+    inner = (label if label is not None else
+             f"<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='12' cy='12' r='10'/>"
+             f"<path d={_GLOBE_SVG}/><path d='M2 12h20'/></svg>")
+    return (f"<a class='{esc(cls)}' href='{esc(config.PETITION_API_BASE)}/api/petition?name={quote(name)}' "
+            f"target='_blank' rel='noopener' title='open raw petition JSON'>{inner}</a>")
+
+
+def _score_chunk_vars(declared, predicted) -> dict:
     """One dict of every $placeholder the three score-chunk templates need
     (chunk_classify / chunk_ocr / chunk_quality) — shared by the dashboard and
     the per-chunk detail pages (/classify-score, /ocr-score, /quality-score)
     so the numbers can never drift apart. Honors the dashboard type filters
     for the verdict chunks; quality counts are corpus-wide."""
-    type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted, oov_only)
+    type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted)
     with connect() as conn, conn.cursor() as cur:
         cur.execute(queries.doctype_breakdown_sql(type_clause_ctx))
         dt_correct_b, dt_wrong, dt_total_b = cur.fetchone()
@@ -222,21 +279,20 @@ def _score_chunk_vars(declared, predicted, oov_only) -> dict:
         "q_fair_pct": q_level_pcts["fair"], "q_poor_pct": q_level_pcts["poor"],
         # querystring preserving the type filters on chunk links
         "cs_qs": esc("?" + urlencode({k: v for k, v in
-            (("declared", declared), ("predicted", predicted),
-             ("oov_only", "1" if oov_only else None)) if v}) if
-            (declared or predicted or oov_only) else ""),
+            (("declared", declared), ("predicted", predicted)) if v}) if
+            (declared or predicted) else ""),
     }
 
 
-def _type_filter_form(action: str, declared, predicted, oov_only,
+def _type_filter_form(action: str, declared, predicted,
                       hidden: dict | None = None) -> str:
-    """The declared/predicted/OOV filter form, pointed at any score detail
+    """The declared/predicted filter form, pointed at any score detail
     page (GET). Same controls as the dashboard's, so every score page filters
     identically."""
     declared_labels = _enum_labels("declared_category_t")
     classifiable = set(_enum_labels("classifiable_category_t"))
     declared_opts = "".join(
-        f"<option value='{esc(l)}' {'selected' if l==declared else ''}>{esc(l)}{' (OOV)' if l not in classifiable else ''}</option>"
+        f"<option value='{esc(l)}' {'selected' if l==declared else ''}>{esc(l)}</option>"
         for l in declared_labels)
     predicted_opts = "".join(
         f"<option value='{esc(l)}' {'selected' if l==predicted else ''}>{esc(l)}</option>"
@@ -249,7 +305,6 @@ def _type_filter_form(action: str, declared, predicted, oov_only,
             f"<select name='declared'><option value=''>(any)</option>{declared_opts}</select></label> "
             "<label>predicted category: "
             f"<select name='predicted'><option value=''>(any)</option>{predicted_opts}</select></label> "
-            f"<label><input type='checkbox' name='oov_only' value='1' {'checked' if oov_only else ''}> OOV-only</label> "
             "<button>Apply</button></form>")
 
 
@@ -536,7 +591,7 @@ class Handler(BaseHTTPRequestHandler):
         qs = self._qs()
         filt = qs.get("filter") or ""  # empty = all petitions
         q = (qs.get("q") or "").strip()
-        type_clause = queries.type_filter_sql(None, None, False)
+        type_clause = queries.type_filter_sql(None, None)
         status_predicate = queries.STATUS_FILTERS.get(filt)  # None = all
 
         sql = queries.petition_cards_sql(status_predicate, type_clause, limit=2000)
@@ -588,7 +643,7 @@ class Handler(BaseHTTPRequestHandler):
                         if txn else "")
             body_rows.append(
                 f"<tr>"
-                f"<td class='pid'><div class='ln'>{txn_link}{txn_copy}</div></td>"
+                f"<td class='pid'><div class='ln'>{txn_link}{txn_copy}{_petition_link(txn)}</div></td>"
                 f"<td class='pid'><div class='ln'><span class='mono small dim'>{esc(pid[:12])}…</span>"
                 f"<button class='cp' data-copy='{esc(pid)}' title='copy petition id'>⧉</button></div></td>"
                 f"<td>{esc(dno or '—')}</td>"
@@ -703,8 +758,7 @@ class Handler(BaseHTTPRequestHandler):
         view = qs.get("view", "petitions")
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        type_clause = queries.type_filter_sql(declared, predicted, oov_only)
+        type_clause = queries.type_filter_sql(declared, predicted)
 
         counts = {name: _count_where(pred, type_clause)
                   for name, pred in queries.STATUS_FILTERS.items()}
@@ -734,7 +788,7 @@ class Handler(BaseHTTPRequestHandler):
             # AND human-reviewed, both now per-PAGE. doctype_acc = correct /
             # doctype-verdicted pages (doc_types right? True); ocr_acc =
             # (correct+acceptable) / all ocr page verdicts on AI-extracted pages.
-            type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted, oov_only)
+            type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted)
             cur.execute(queries.doctype_accuracy_sql(type_clause_ctx))
             dt_correct, dt_total = cur.fetchone()
             cur.execute(queries.ocr_accuracy_sql(type_clause_ctx))
@@ -744,7 +798,7 @@ class Handler(BaseHTTPRequestHandler):
         ocr_acc_pct = round(100 * ocr_good / ocr_total) if ocr_total else 0
         # the three score chunks (shared with the detail pages via the same
         # chunk templates + _score_chunk_vars)
-        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk_vars = _score_chunk_vars(declared, predicted)
         chunk_classify = render("chunk_classify.html", **chunk_vars)
         chunk_ocr = render("chunk_ocr.html", **chunk_vars)
         chunk_quality = render("chunk_quality.html", **chunk_vars)
@@ -791,7 +845,7 @@ class Handler(BaseHTTPRequestHandler):
         declared_labels = _enum_labels("declared_category_t")
         classifiable = set(_enum_labels("classifiable_category_t"))
         declared_opts = "".join(
-            f"<option value='{esc(l)}' {'selected' if l==declared else ''}>{esc(l)}{' (OOV)' if l not in classifiable else ''}</option>"
+            f"<option value='{esc(l)}' {'selected' if l==declared else ''}>{esc(l)}</option>"
             for l in declared_labels)
         predicted_opts = "".join(
             f"<option value='{esc(l)}' {'selected' if l==predicted else ''}>{esc(l)}</option>"
@@ -820,7 +874,6 @@ class Handler(BaseHTTPRequestHandler):
             cards=cards_html, cards_header=cards_header, cards_more=cards_more,
             filter=esc(filt), view=esc(view),
             declared_opts=declared_opts, predicted_opts=predicted_opts,
-            oov_checked="checked" if oov_only else "",
             index_summary=f"files: see counts above · worker pid may be running",
         )
         self._html(200, base("Dashboard", body, nav_dash="active"))
@@ -833,8 +886,7 @@ class Handler(BaseHTTPRequestHandler):
         view = qs.get("view", "petitions")
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        type_clause = queries.type_filter_sql(declared, predicted, oov_only)
+        type_clause = queries.type_filter_sql(declared, predicted)
         # status predicate is None for the unfiltered "all" view
         predicate = queries.STATUS_FILTERS.get(filt) or "1=1"
 
@@ -938,7 +990,8 @@ class Handler(BaseHTTPRequestHandler):
             href = f"/review/{quote(sha)}?declared={quote(decl)}"
             txn_cell = (f"<td class='pid'><div class='ln'>"
                         f"<a class='open' href='/txn/{quote(txn)}'><span class='mono'>{esc(txn)}</span></a>"
-                        f"<button class='cp' data-copy='{esc(txn)}' title='copy txn_id'>⧉</button></div></td>"
+                        f"<button class='cp' data-copy='{esc(txn)}' title='copy txn_id'>⧉</button>"
+                        f"{_petition_link(txn)}</div></td>"
                         if txn else "<td class='small dim'>—</td>")
             file_cell = (f"<span class='mono small'>{esc(sha[:16])}…</span>"
                          + (f"<br><span class='small'>{esc(sfn)} ({esc(kind)}, {pgs}p)</span>"
@@ -1005,8 +1058,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted, oov_only)
+        type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted)
 
         with connect() as conn, conn.cursor() as cur:
             cur.execute(queries.verdict_pages_sql(stage, verdict, type_clause_ctx))
@@ -1042,7 +1094,7 @@ class Handler(BaseHTTPRequestHandler):
 
         # preserve the active type filters on the way back to the dashboard
         back_qs = urlencode({k: v for k, v in
-            (("declared", declared), ("predicted", predicted), ("oov_only", "1" if oov_only else None)) if v})
+            (("declared", declared), ("predicted", predicted)) if v})
         back = "/dashboard?" + back_qs if back_qs else "/dashboard"
         body = (f"<h3>{esc(stage_label)} — {esc(verdict)} pages</h3>"
                 f"<p class='small'>{len(rows)} page verdict(s) · "
@@ -1133,8 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
         qs = self._qs()
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted, oov_only)
+        type_clause_ctx = queries.type_filter_ctx_sql(declared, predicted)
 
         with connect() as conn, conn.cursor() as cur:
             cur.execute(queries.confusion_sql(type_clause_ctx))
@@ -1200,12 +1251,11 @@ class Handler(BaseHTTPRequestHandler):
 
         back_qs = urlencode({k: v for k, v in
             (("declared", declared), ("predicted", predicted),
-             ("oov_only", "1" if oov_only else None)) if v})
+             ) if v})
         back = "/dashboard?" + back_qs if back_qs else "/dashboard"
-        filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
-                       if (declared or predicted or oov_only) else "")
+        filter_note = " · filtered by type" if (declared or predicted) else ""
         # score chunk (same numbers as the dashboard)
-        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk_vars = _score_chunk_vars(declared, predicted)
         chunk = render("chunk_classify.html", **chunk_vars)
         body = (f"<h3>Classify score — doc_types confusion matrix (per page)</h3>"
                 f"<p class='small'>{total} page verdict(s) counted{filter_note} · "
@@ -1222,11 +1272,9 @@ class Handler(BaseHTTPRequestHandler):
         qs = self._qs()
         declared = qs.get("declared") or None
         predicted = qs.get("predicted") or None
-        oov_only = qs.get("oov_only") == "1"
-        chunk_vars = _score_chunk_vars(declared, predicted, oov_only)
+        chunk_vars = _score_chunk_vars(declared, predicted)
         chunk = render("chunk_ocr.html", **chunk_vars)
-        filter_note = (f" · filtered by {('OOV-only' if oov_only else 'type')}"
-                       if (declared or predicted or oov_only) else "")
+        filter_note = " · filtered by type" if (declared or predicted) else ""
         body = (f"<h3>OCR / ADE score — is the extracted data correct? (per page)</h3>"
                 f"<p class='small'>{chunk_vars['ocr_acc_total']} OCR page verdict(s) "
                 f"counted{filter_note} · "
@@ -1294,14 +1342,16 @@ class Handler(BaseHTTPRequestHandler):
         # by ck-body.js (in base.html) on click; data-txn parameterizes the fetch.
         has_body = raw_json is not None
         if has_body:
+            elink = _petition_link(txn, cls="ck-body-btn",
+                                   label="🌐 Elicense Approval Support System")
             body_btn = (f"<button id='ckBodyBtn' class='ck-body-btn' data-txn='{esc(txn)}'>"
-                        f"📋 Request body</button>"
+                        f"📋 Request body</button> {elink}"
                         f"<div id='ckModalMount'></div>")
         else:
             body_btn = "<span class='small dim'>no request body (CSV-only petition)</span>"
 
         meta = (f"<b>txn_id</b> <span class='mono'>{esc(txn) if txn else '—'}</span>"
-                + (f"<button class='cp' data-copy='{esc(txn)}' title='copy txn_id'>⧉</button>" if txn else "")
+                + (f"<button class='cp' data-copy='{esc(txn)}' title='copy txn_id'>⧉</button>{_petition_link(txn)}" if txn else "")
                 + f" · <b>petition id</b> <span class='mono small'>{esc(str(pid))}</span>"
                 + f" · document_no={esc(dno or '—')} · state={esc(st or '—')} · {len(files)} file(s)")
         body = render("petition.html", meta=meta, rows="".join(rows_html), body_btn=body_btn)
@@ -1373,10 +1423,6 @@ class Handler(BaseHTTPRequestHandler):
                            ORDER BY pf.declared_category""", (sha,))
             contexts = cur.fetchall()
             conn.commit()
-
-        # OOV declared types can never match the classifier output (they're outside
-        # its vocabulary); flagged in the heading, not auto-compared.
-        is_oov = queries.is_oov(declared)
 
         # One Document Section card per page. Each card shows: the extract JSON,
         # then the per-page doc_types classification block, then TWO independent
@@ -1462,8 +1508,7 @@ class Handler(BaseHTTPRequestHandler):
         # Frame-3 heading block: TXN <uuid> is the page <h2> (passed to base());
         # the declared type (Thai + key) + filename render as 24px lines here.
         head_declared = (f"{esc(_declared_thai_label(declared))}"
-                         f" <span class='dim'>({esc(declared)})</span>"
-                         + (" <span class='pill pill-oov'>OOV</span>" if is_oov else ""))
+                         f" <span class='dim'>({esc(declared)})</span>")
         head_filename = esc(head_filename) if head_filename else esc(local_path or "—")
         review_heading = (
             f"<div class='review-heading'>"
@@ -1481,7 +1526,9 @@ class Handler(BaseHTTPRequestHandler):
             contexts=contexts_html,
             sha=quote(sha),
         )
-        self._html(200, base(f"TXN {head_txn}" if head_txn else f"Review {sha[:12]}", body))
+        self._html(200, base(f"TXN {head_txn}" if head_txn else f"Review {sha[:12]}", body,
+                             title_html=(f"<a class='h-txn' href='/txn/{quote(head_txn)}'>"
+                                         f"TXN {esc(head_txn)}</a>") if head_txn else ""))
 
     # ===== page PNG =====
     def _page_png(self, rest: str):

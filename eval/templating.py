@@ -29,14 +29,18 @@ def render(name: str, **mapping) -> str:
     return _load(name).safe_substitute(**mapping)
 
 
-def base(title: str, body: str, *, nav_home: str = "", nav_dash: str = "",
-         nav_classify: str = "", run_state: str = "", model_name: str = "") -> str:
+def base(title: str, body: str, *, title_html: str = "", nav_home: str = "",
+         nav_dash: str = "", nav_classify: str = "", run_state: str = "",
+         model_name: str = "") -> str:
     """Wrap a body fragment in the page shell. nav_home/nav_dash/nav_classify are
     the 'active' class for the corresponding header link; run_state is a small
     status string; model_name is the LLM model shown in the header bar
-    (config.MODEL_NAME)."""
+    (config.MODEL_NAME). title_html, when given, is substituted into the <h2>
+    UNESCAPED (caller-supplied trusted markup, e.g. the review page's link to
+    /txn/<uuid>) and takes precedence over the escaped plain title."""
     return render("base.html",
-                  title=html.escape(title), body=body,
+                  title=title_html if title_html else html.escape(title),
+                  body=body,
                   nav_home=nav_home, nav_dash=nav_dash, nav_classify=nav_classify,
                   run_state=html.escape(run_state),
                   model_name=html.escape(model_name or config.MODEL_NAME))

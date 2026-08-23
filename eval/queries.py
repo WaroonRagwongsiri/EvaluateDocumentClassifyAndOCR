@@ -1,25 +1,10 @@
 """SQL predicates + helper queries for the dashboard filters and review pages.
 
 The four dashboard filters are defined per-files-row in PLAN.md; the type filters
-(declared / predicted / OOV-only) AND-compose with them. OOV is derived from the
-enum membership (a declared_category is OOV iff it is not one of the 19
-classifiable types), queried via pg_enum so it stays in sync with the schema.
+(declared / predicted) AND-compose with them.
 """
 from __future__ import annotations
 
-# --- OOV detection -----------------------------------------------------------
-# A declared_category value is OOV iff it is NOT a member of classifiable_category_t.
-# pg_enum gives us the classifiable enum's labels; everything in declared_category_t
-# not in that set is OOV. Kept as a subquery (not materialized) so it's always in
-# sync with the enums.
-_OOV_PREDICATE = (
-    "declared_category::text NOT IN "
-    "(SELECT enumlabel FROM pg_enum WHERE enumtypid = 'classifiable_category_t'::regtype)"
-)
-_IN_VOCAB_PREDICATE = (
-    "declared_category::text IN "
-    "(SELECT enumlabel FROM pg_enum WHERE enumtypid = 'classifiable_category_t'::regtype)"
-)
 
 # --- Dashboard status filters (per files row f) -----------------------------
 
@@ -254,7 +239,7 @@ WHERE v.stage = 'ocr'
 
 
 def doctype_accuracy_sql(type_clause: str) -> str:
-    """DocType accuracy query. {type_clause_ctx} narrows by declared/predicted/OOV
+    """DocType accuracy query. {type_clause_ctx} narrows by declared/predicted
     when the dashboard's type filters are active (references v/f via the aliases
     used above); '' otherwise. Returns (n_correct, n_total)."""
     return DOCTYPE_ACCURACY_SQL.format(type_clause_ctx=type_clause)
@@ -379,13 +364,13 @@ WHERE v.stage = 'doctype'
 
 def confusion_sql(type_clause_ctx: str) -> str:
     """Confusion-matrix rows for /classify-score. {type_clause_ctx} narrows by
-    declared/predicted/OOV when the dashboard's type filters are active
+    declared/predicted when the dashboard's type filters are active
     (references v/f via the aliases used above); '' otherwise."""
     return CONFUSION_SQL.format(type_clause_ctx=type_clause_ctx)
 
 
 # --- Type filters (AND-compose with a status filter) ------------------------
-def type_filter_sql(declared: str | None, predicted: str | None, oov_only: bool) -> str:
+def type_filter_sql(declared: str | None, predicted: str | None) -> str:
     """Build an optional AND-clause for type filters. Returns '' or ' AND (...)'."""
     clauses: list[str] = []
     if declared:
@@ -394,45 +379,24 @@ def type_filter_sql(declared: str | None, predicted: str | None, oov_only: bool)
         )
     if predicted:
         clauses.append(f"f.ai_predicted_category = '{predicted}'")
-    if oov_only:
-        # file's contexts are ALL OOV (at least one context, none in-vocab)
-        clauses.append(
-            f"(EXISTS (SELECT 1 FROM petition_files pf WHERE pf.sha256 = f.sha256) "
-            f"AND NOT EXISTS (SELECT 1 FROM petition_files pf WHERE pf.sha256 = f.sha256 "
-            f"AND pf.declared_category::text IN "
-            f"(SELECT enumlabel FROM pg_enum WHERE enumtypid = 'classifiable_category_t'::regtype)))"
-        )
     if not clauses:
         return ""
     return " AND (" + " AND ".join(clauses) + ")"
 
 
-def type_filter_ctx_sql(declared: str | None, predicted: str | None, oov_only: bool) -> str:
+def type_filter_ctx_sql(declared: str | None, predicted: str | None) -> str:
     """Type-filter clause for the accuracy queries (queries.py DOCTYPE/OCR_ACCURACY).
     Those queries key off verdicts v + files f (v.declared_category IS the context),
-    so 'declared' narrows v.declared_category directly (not via petition_files)
-    and OOV is evaluated against v.declared_category. Returns '' or ' AND (...)'."""
+    so 'declared' narrows v.declared_category directly (not via petition_files).
+    Returns '' or ' AND (...)'."""
     clauses: list[str] = []
     if declared:
         clauses.append(f"v.declared_category = '{declared}'")
     if predicted:
         clauses.append(f"f.ai_predicted_category = '{predicted}'")
-    if oov_only:
-        clauses.append(
-            "v.declared_category::text NOT IN "
-            "(SELECT enumlabel FROM pg_enum WHERE enumtypid = 'classifiable_category_t'::regtype)"
-        )
     if not clauses:
         return ""
     return " AND (" + " AND ".join(clauses) + ")"
-
-
-def is_oov(declared_category: str | None) -> bool:
-    """Python-side OOV check (for review-page rendering). None -> treat as OOV-safe (no compare)."""
-    if not declared_category:
-        return True
-    from .ai.classify import classifiable_fields
-    return declared_category not in classifiable_fields()
 
 
 # --- Petition card query (dashboard landing grid) ---------------------------
