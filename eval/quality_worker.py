@@ -5,18 +5,21 @@ A separate OS process (spawned by the HTTP server's QWORKER control, or run by
 hand as `python -m eval.quality_worker`). The loop:
 
   1. Poll run_control.quality_want_stop -> if true, exit 0 (graceful stop).
-  2. Pick the oldest unscored renderable page (file_pages.quality_score IS
-     NULL, files.content_kind <> 'other') — LIMIT 1, no FOR UPDATE needed:
-     scoring is idempotent (quality.score_page returns the stored row if any)
-     and the on-demand /quality/<sha>/<page> route may race harmlessly.
-  3. quality.score_page(sha, page_no) renders + scores + persists. Returns
-     None on failure (cold model, timeout, render error); a failure budget per
-     page skips permanently failing pages instead of looping forever.
+  2. Pick the oldest unscored renderable pages (file_pages.quality_score IS
+     NULL, files.content_kind <> 'other') — LIMIT QUALITY_BATCH_SIZE, no FOR
+     UPDATE needed: scoring is idempotent (quality.score_pages_batch returns
+     the stored row if any) and the on-demand /quality/<sha>/<page> route may
+     race harmlessly.
+  3. quality.score_pages_batch(pages) renders them in parallel and scores the
+     batch in ONE model forward. Per-page failure budget skips permanently
+     failing pages instead of looping forever.
   4. No unscored pages left -> exit 0. Restart (Start/Continue on the
      worker-log page) resumes whatever is still NULL.
 
-The scorer itself is single-request pipelined (eval.quality._lock), so a
-single quality worker is the right concurrency — don't run two.
+The scorer subprocess serves one request at a time behind eval.quality._lock,
+but each request is a batch (QUALITY_BATCH_SIZE pages per forward), so a
+single worker at a large batch size is the right concurrency — don't run two
+workers, raise the batch size instead.
 """
 from __future__ import annotations
 
@@ -40,8 +43,9 @@ def _want_stop(conn) -> bool:
     return bool(row and row[0])
 
 
-def _next_unscored(conn) -> tuple[str, int] | None:
-    """Oldest unscored renderable (sha, page_no), or None when done."""
+def _next_unscored(conn, limit: int) -> list[tuple[str, int]]:
+    """Oldest unscored renderable (sha, page_no) rows (up to `limit`), or an
+    empty list when done."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -52,11 +56,11 @@ def _next_unscored(conn) -> tuple[str, int] | None:
               AND fp.quality_level IS DISTINCT FROM 'error'
               AND f.content_kind <> 'other'
             ORDER BY f.first_seen_at, fp.sha256, fp.page_no
-            LIMIT 1
+            LIMIT %s
             """,
+            (limit,),
         )
-        row = cur.fetchone()
-    return (row[0], row[1]) if row else None
+        return [(r[0], r[1]) for r in cur.fetchall()]
 
 
 def _mark_failed(conn, sha256: str, page_no: int) -> None:
@@ -81,24 +85,25 @@ def run_once() -> int:
             if _want_stop(conn):
                 log.info("quality_want_stop set -> exiting")
                 return 0
-            nxt = _next_unscored(conn)
-            if nxt is None:
+            batch = _next_unscored(conn, quality.BATCH_SIZE)
+            if not batch:
                 log.info("no unscored pages -> done")
                 return 0
-            sha, pno = nxt
-            res = quality.score_page(sha, pno)
-            if res is not None:
-                attempts.pop((sha, pno), None)
-                log.info("sha=%s page=%s quality=%.2f %s",
-                         sha[:10], pno, res[0], res[1])
-                continue
-            n = attempts.get((sha, pno), 0) + 1
-            attempts[(sha, pno)] = n
-            if n >= _MAX_ATTEMPTS:
-                _mark_failed(conn, sha, pno)
-            else:
-                log.info("sha=%s page=%s attempt %s failed -> retrying",
-                         sha[:10], pno, n)
+            results = quality.score_pages_batch(batch)
+            for page in batch:
+                res = results.get(page)
+                if res is not None:
+                    attempts.pop(page, None)
+                    log.info("sha=%s page=%s quality=%.2f %s",
+                             page[0][:10], page[1], res[0], res[1])
+                    continue
+                n = attempts.get(page, 0) + 1
+                attempts[page] = n
+                if n >= _MAX_ATTEMPTS:
+                    _mark_failed(conn, *page)
+                else:
+                    log.info("sha=%s page=%s attempt %s failed -> retrying",
+                             page[0][:10], page[1], n)
     finally:
         conn.close()
 

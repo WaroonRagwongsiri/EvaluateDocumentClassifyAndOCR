@@ -11,10 +11,17 @@ softmax over just those, expected score = sum(prob * weight), weights 5..1
 (the repo's src/evaluate/scorer.py, adapted to a long-lived service).
 
 Protocol (one JSON per line):
-  stdin : {"id": <any>, "image": "<abs path to page PNG>"}
-  stdout: {"id": ..., "score": 3.42, "level": "fair", "probs": {...}}
+  stdin : {"id": <any>, "image": "<abs path>"}                      # single
+          {"id": <any>, "images": ["<abs path>", ...]}              # batch
+  stdout: {"id": ..., "score": 3.42, "level": "fair", "probs": {...}}          # single
+          {"id": ..., "results": [{"score","level","probs"} | {"error"}, ...]} # batch
   startup: one {"ready": true, "load_s": ...} line first
-  per-image errors emit {"id": ..., "error": "..."} and the service lives on
+  per-image errors appear in-place in "results" ({"error": "..."}) and the
+  service lives on; a whole-request failure emits {"id": ..., "error": "..."}
+
+A batch runs ONE forward pass (all items share the same prompt; only the
+image tensor differs — the model's prepare_inputs_labels_for_multimodal
+handles a batched image tensor natively).
 
 MUST be launched with CUDA_VISIBLE_DEVICES=4 (GPU 4 reserved for this service).
 
@@ -120,6 +127,19 @@ def main() -> int:
     print(json.dumps({"ready": True, "load_s": round(time.time() - t0, 1),
                       "model": args.model}), flush=True)
 
+    def _load(img_path):
+        """Open + pad one image (the shared per-image preprocessing)."""
+        img = Image.open(img_path).convert("RGB")
+        return expand2square(img, tuple(int(x * 255) for x in
+                                        image_processor.image_mean))
+
+    def _score_one(logits_row):
+        probs = torch.softmax(logits_row[level_ids_t].float(), dim=-1)
+        score = float((probs * weights_t).sum())
+        return {"score": round(score, 3), "level": level_for(score),
+                "probs": {lv: round(float(p), 4)
+                          for lv, p in zip(LEVEL_NAMES, probs)}}
+
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -127,27 +147,54 @@ def main() -> int:
         req = {}
         try:
             req = json.loads(line)
-            img = Image.open(req["image"]).convert("RGB")
-            img = expand2square(img, tuple(int(x * 255) for x in
-                                           image_processor.image_mean))
-            with torch.inference_mode():
-                tensor = image_processor.preprocess(
-                    img, return_tensors="pt")["pixel_values"].half().to(model.device)
-                # input_ids MUST be keyword: forward's first positional param
-                # is input_type (None→forward_single, else ValueError).
-                logits = model(input_ids=input_ids.repeat(tensor.shape[0], 1),
-                               images=tensor)["logits"][:, -1, :]
-                five = logits[0, level_ids_t]
-                probs = torch.softmax(five.float(), dim=-1)
-                score = float((probs * weights_t).sum())
-            resp = {"id": req.get("id"), "score": round(score, 3),
-                    "level": level_for(score),
-                    "probs": {lv: round(float(p), 4)
-                              for lv, p in zip(LEVEL_NAMES, probs)}}
+            paths = req["images"] if "images" in req else [req["image"]]
+            req_id = req.get("id")
         except Exception as exc:
             import traceback; traceback.print_exc()
             resp = {"id": req.get("id") if isinstance(req, dict) else None,
                     "error": f"{type(exc).__name__}: {exc}"}
+            print(json.dumps(resp), flush=True)
+            continue
+
+        # Per-image decode errors are isolated in-place; only decodable images
+        # reach the (single) forward pass.
+        results: list = []
+        tensors = []
+        slot_of: list[int] = []  # tensor index -> position in results
+        for img_path in paths:
+            try:
+                img = _load(img_path)
+                with torch.inference_mode():
+                    tensors.append(image_processor.preprocess(
+                        img, return_tensors="pt")["pixel_values"]
+                        .half().to(model.device))
+                slot_of.append(len(results))
+                results.append(None)  # placeholder, filled after the forward
+            except Exception as exc:
+                import traceback; traceback.print_exc()
+                results.append({"error": f"{type(exc).__name__}: {exc}"})
+
+        if tensors:
+            try:
+                with torch.inference_mode():
+                    batch = torch.cat(tensors, dim=0)
+                    # input_ids MUST be keyword: forward's first positional
+                    # param is input_type (None→forward_single, else ValueError).
+                    logits = model(input_ids=input_ids.repeat(batch.shape[0], 1),
+                                   images=batch)["logits"][:, -1, :]
+                for i, row in enumerate(logits):
+                    results[slot_of[i]] = _score_one(row)
+            except Exception as exc:
+                import traceback; traceback.print_exc()
+                err = {"error": f"{type(exc).__name__}: {exc}"}
+                for i in range(len(slot_of)):
+                    results[slot_of[i]] = err
+
+        # Single-image requests keep the old flat shape (on-demand route).
+        if "images" not in req and len(results) == 1:
+            resp = {"id": req_id, **results[0]}
+        else:
+            resp = {"id": req_id, "results": results}
         print(json.dumps(resp), flush=True)
     return 0
 
