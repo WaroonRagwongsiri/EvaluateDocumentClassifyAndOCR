@@ -59,7 +59,8 @@ def _ensure_started() -> bool:
     if not (_SCORER_PY.exists() and _MODEL_DIR.exists()):
         log.warning("quality scorer unavailable: %s or %s missing", _SCORER_PY, _MODEL_DIR)
         return False
-    env = dict(os.environ, CUDA_VISIBLE_DEVICES="4",
+    env = dict(os.environ,
+               CUDA_VISIBLE_DEVICES=os.environ.get("QUALITY_CUDA_VISIBLE_DEVICES", "4"),
                PYTHONPATH=str(_PROJECT_ROOT / "QualityScore" / "DeQA-Score"))
     _proc = subprocess.Popen(
         [str(_SCORER_PY), str(_SCORER_SCRIPT), "--model", str(_MODEL_DIR)],

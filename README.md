@@ -87,16 +87,22 @@ LoRA), on GPU 4. `eval.quality` spawns `scorer_service.py` itself as a
 subprocess on first use (on-demand pill fill, or the quality worker below), so
 you normally don't run it by hand. The DeQA-Score code and model weights live
 under `QualityScore/` (a git submodule of the upstream repo). See
-`QualityScore/Readme.md` for details. To watch the JSONL protocol by hand:
+`QualityScore/Readme.md` for details.
+
+A manual run is **only for debugging the JSONL protocol** — the server never
+connects to an externally started scorer (it always spawns its own), so a
+hand-run instance just loads a second copy of the model onto GPU 4 and sits
+idle unless you pipe requests into it yourself:
 
 ```bash
 tmux new-session -s quality_score
 # inside the session, from the repo root:
-CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py
+CUDA_VISIBLE_DEVICES=4 QualityScore/.venv/bin/python scorer_service.py   # 4 = the GPU in QUALITY_CUDA_VISIBLE_DEVICES
 ```
 
-The model dir and torch device are configurable in `.env` (`QUALITY_MODEL`,
-`QUALITY_DEVICE`) — no CLI flags needed for the default setup.
+The model dir, GPU, and torch device are configurable in `.env`
+(`QUALITY_MODEL`, `QUALITY_CUDA_VISIBLE_DEVICES`, `QUALITY_DEVICE`) — no CLI
+flags needed for the default setup.
 
 It prints one `{"ready": true, …}` line once the model is loaded, then speaks
 JSON on stdin/stdout (one `{"id", "image"}` in → one `{"id", "score", …}` out).
