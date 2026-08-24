@@ -45,10 +45,13 @@ cd /home/user/aiProject/dev/rain/document_classifier_evaluate_qwen
 # 1) Install Python deps
 uv sync
 
-# 2) Bring up Postgres (host port 5435 → container 5432, db evalutea_classi_ocr)
+# 2) Bring up Postgres (host port 5435 → container 5432)
 docker compose up -d
 
-# 3) Apply the schema + load the index (CSV files + GET-mock JSON petitions)
+# 3) Create the per-model database + apply the schema
+uv run switch_model.py
+
+# 4) Load the index (CSV files + GET-mock JSON petitions)
 uv run eval-index
 # Expect: files ≈ 37,678 · petitions ≈ 9,512 · file_pages ≈ 286,906 · petition_files ≈ 37,678
 # (~14 corrupt PDFs fail to open and degrade to content_kind='other' — expected, not an error.)
@@ -209,6 +212,7 @@ worker-log, score-detail, and review-queue pages and the review flow:
 
 | Command | What it does |
 |---|---|
+| `uv run switch_model.py` | ensure the current `MODEL_NAME`'s database exists + apply schema (idempotent); `--status` lists all model databases |
 | `uv run eval-index` | apply schema + load CSV files + JSON petitions (idempotent) |
 | `uv run eval-worker` | run the AI worker once until no pending work / `want_stop` |
 | `uv run python -m eval.quality_worker` | run the quality-score worker once until no unscored pages / `quality_want_stop` |
@@ -218,11 +222,38 @@ The worker can also be run by hand (`uv run eval-worker`) for debugging; it read
 `run_control.want_stop` and exits gracefully, so the dashboard's Stop and a manual
 worker interoperate.
 
+## Switching models
+
+Results are isolated **one Postgres database per model**: `DB_DSN` defaults to
+`evalutea_<model_slug>` derived from `MODEL_NAME` (`Qwen/Qwen3.6-35B-A3B` →
+`evalutea_qwen3_6_35b_a3b`), so changing `MODEL_NAME` in `.env` switches the
+database too. To evaluate a different model:
+
+```bash
+# 1) edit MODEL_NAME in .env, then:
+uv run switch_model.py        # create the new model's db if missing + apply schema (idempotent)
+uv run eval-index             # index petitions/files into the fresh db
+uv run python -m eval.server  # run the worker/review against the new model
+```
+
+`switch_model.py` never drops or recreates an existing database — re-running it
+for the current model only reapplies the schema (a no-op). Use
+`uv run switch_model.py --status` to list every `evalutea_*` database with its
+verdict count (per-model results stay frozen side by side). Two things are
+shared across models, so a switch is cheaper than a fresh start: the page-PNG
+cache (`CACHE_DIR`, keyed by sha256 — no re-rendering) and the Postgres instance
+itself. Set `DB_DSN` explicitly in `.env` only to pin a database and ignore
+`MODEL_NAME` (e.g. the legacy shared `evalutea_classi_ocr`).
+
+> History: the project originally used a single shared db
+> (`evalutea_classi_ocr`), which was renamed to `evalutea_qwen3_6_35b_a3b`
+> (286k indexed pages preserved) when per-model databases were introduced.
+
 ## Configuration (`.env`)
 
 | Var | Default | Notes |
 |---|---|---|
-| `DB_DSN` | `postgresql://eval:eval@localhost:5435/evalutea_classi_ocr` | the docker-compose Postgres |
+| `DB_DSN` | `postgresql://eval:eval@localhost:5435/evalutea_<model_slug>` | derived from `MODEL_NAME` (one db per model); set explicitly to pin/override |
 | `LLM_ENDPOINT` | `http://localhost:4000` | OpenAI-compatible `/v1/chat/completions` |
 | `MODEL_API_KEY` | `sk-1234` | |
 | `MODEL_NAME` | `Qwen/Qwen3.6-35B-A3B` | must exist on the endpoint |
