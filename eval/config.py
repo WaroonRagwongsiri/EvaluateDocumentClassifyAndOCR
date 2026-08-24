@@ -4,6 +4,7 @@ All other modules read these constants rather than touching os.environ directly,
 so the LLM endpoint / DB DSN / cache dir are set in exactly one place (.env).
 """
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,13 +14,26 @@ from dotenv import load_dotenv
 # import happens, so __file__-relative resolution is stable regardless of CWD.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-# --- Postgres ---
-DB_DSN: str = os.environ.get("DB_DSN", "postgresql://eval:eval@localhost:5435/evalutea_classi_ocr")
-
 # --- LLM endpoint (OpenAI-compatible) ---
 LLM_ENDPOINT: str = os.environ.get("LLM_ENDPOINT", "http://localhost:4000")
 MODEL_API_KEY: str = os.environ.get("MODEL_API_KEY", "sk-1234")
 MODEL_NAME: str = os.environ.get("MODEL_NAME", "Qwen/Qwen3.6-35B-A3B")
+
+
+def model_slug(model: str) -> str:
+    """Filesystem-safe DB-name slug from a model id: 'Qwen/Qwen3.6-35B-A3B'
+    -> 'qwen3_6_35b_a3b' (org prefix dropped so slugs stay short)."""
+    return re.sub(r"[^a-z0-9]+", "_", model.split("/")[-1].lower()).strip("_")
+
+
+# --- Postgres ---
+# One database per model (results are isolated per MODEL_NAME); the derived
+# default means switching MODEL_NAME in .env switches the database too.
+# Set DB_DSN explicitly only to override (e.g. pin the legacy shared db).
+DB_DSN: str = os.environ.get(
+    "DB_DSN",
+    f"postgresql://eval:eval@localhost:5435/evalutea_{model_slug(MODEL_NAME)}",
+)
 
 # Classification/OCR call tuning. Wind's defaults: temperature 0.0, thinking off
 # (the modelharbor proxy has no standard "think" field). Kept as module constants
