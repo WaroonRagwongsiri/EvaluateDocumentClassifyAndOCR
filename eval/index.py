@@ -12,6 +12,11 @@ Two sources, joined by txn_id:
 The CSV is the sha256/local-path authority (no S3, no hashing); the JSON file
 records are NOT used for the join — the CSV already encodes file→petition→declared
 type. Idempotent: ON CONFLICT DO UPDATE/NOTHING, so re-runs are safe.
+
+Petitions are restricted to those that exist in the elicense system: txn_ids
+present in MOCK_ROOT/manifest.jsonl (the server's globe-button binding). CSV
+rows for unbound txns are skipped, and unbound petitions from earlier runs are
+purged at the end (CASCADE).
 """
 from __future__ import annotations
 
@@ -54,8 +59,50 @@ def _content_kind_and_pages(path: Path, ext: str) -> tuple[str, int]:
     return "other", 0
 
 
-def _load_petitions_from_json(conn) -> int:
-    """Walk MOCK_ROOT for GET_*.json and upsert petitions. Returns count parsed."""
+def _bound_txn_ids() -> "set[str] | None":
+    """txn_ids that actually exist in the elicense system, per MOCK_ROOT/
+    manifest.jsonl (extract_all.py output, generated from
+    general_petition_txn_active — the same binding the server's globe buttons
+    use via server._txn_names). Returns None when the manifest is unreadable
+    so the caller can disable the filter instead of emptying the corpus."""
+    manifest = config.MOCK_ROOT / "manifest.jsonl"
+    try:
+        txns: set[str] = set()
+        with manifest.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("txn_id") and r.get("file"):
+                    txns.add(str(r["txn_id"]))
+    except OSError as exc:
+        log.warning("manifest unavailable (%s): %s — petition binding DISABLED",
+                    manifest, exc)
+        return None
+    log.info("bound txn_ids from manifest: %d", len(txns))
+    return txns
+
+
+def _csv_txn_ids() -> "set[str]":
+    """Distinct txn_ids in filtered.csv (computed before load; cheap scan of
+    one column)."""
+    txns: set[str] = set()
+    with config.CSV_PATH.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            txn = row.get("txn_id")
+            if txn:
+                txns.add(txn.rstrip("\r"))
+    return txns
+
+
+def _load_petitions_from_json(conn, allowed: "set[str] | None") -> int:
+    """Walk MOCK_ROOT for GET_*.json and upsert petitions. `allowed` (bound ∩
+    CSV txn_ids) restricts the load; None disables the restriction. Returns
+    count parsed."""
     root = config.MOCK_ROOT
     n = 0
     with conn.cursor() as cur:
@@ -72,6 +119,8 @@ def _load_petitions_from_json(conn) -> int:
             txn_id = result.get("txn_id")
             if not pid or not txn_id:
                 continue
+            if allowed is not None and str(txn_id) not in allowed:
+                continue  # unbound petition (not in elicense) or no local files
             # petitions has TWO independent unique constraints: id (PK) and
             # txn_id. ON CONFLICT (id) alone can't catch a stale row carrying
             # the same txn_id under a different id (e.g. a CSV-only stub from
@@ -111,16 +160,23 @@ def _txn_to_petition_id(conn) -> dict[str, str]:
         return {str(r[0]): str(r[1]) for r in cur.fetchall()}
 
 
-def _load_files_from_csv(conn, txn_to_pid: dict[str, str]) -> tuple[int, int, int]:
+def _load_files_from_csv(conn, txn_to_pid: dict[str, str],
+                         allowed: "set[str] | None") -> tuple[int, int, int, int]:
     """Load filtered.csv -> files + file_pages + petition_files. Idempotent.
 
-    Returns (files_upserted, file_pages_upserted, petition_files_upserted).
+    `allowed` (bound txn_ids from the manifest, or None = unfiltered) skips
+    rows whose petition doesn't exist in the elicense system — the stub-petition
+    branch below then never fires for unbound txns.
+
+    Returns (files_upserted, file_pages_upserted, petition_files_upserted,
+    rows_skipped_unbound).
     CRLF is handled by stripping a trailing \\r from each field (the file is
     CRLF-ish on some rows); csv.reader already splits on the line terminator, so
     we only need to normalize stray \\r.
     """
     csv_path = config.CSV_PATH
     files_n = pages_n = pf_n = 0
+    skipped = 0
     # declared_filetype_first: first declared category seen per sha256 (fast-path prefill).
     declared_first: dict[str, str] = {}
 
@@ -140,6 +196,10 @@ def _load_files_from_csv(conn, txn_to_pid: dict[str, str]) -> tuple[int, int, in
                 declared = row["table_column_name"]
                 txn_id = row["txn_id"]
                 source_table = row["table_name"]
+
+                if allowed is not None and txn_id not in allowed:
+                    skipped += 1  # petition not in the elicense system
+                    continue
 
                 path = Path(local_path)
                 ext = path.suffix.lower()
@@ -218,9 +278,10 @@ def _load_files_from_csv(conn, txn_to_pid: dict[str, str]) -> tuple[int, int, in
                 pf_n += 1
 
     conn.commit()
-    log.info("files upserted: %d, file_pages upserted: %d, petition_files upserted: %d",
-             files_n, pages_n, pf_n)
-    return files_n, pages_n, pf_n
+    log.info("files upserted: %d, file_pages upserted: %d, petition_files upserted: %d"
+             "%s", files_n, pages_n, pf_n,
+             f", rows skipped (unbound txn): {skipped}" if skipped else "")
+    return files_n, pages_n, pf_n, skipped
 
 
 def _create_file_extracts(conn) -> int:
@@ -278,21 +339,59 @@ def _create_file_extracts(conn) -> int:
     return n
 
 
+def _purge_unbound(conn, allowed: "set[str] | None") -> None:
+    """Remove rows a previous (unfiltered) index run may have inserted:
+    petitions outside `allowed` (CASCADE drops their petition_files) and files
+    left unreferenced by any petition (CASCADE drops their file_pages /
+    file_extracts). No-op on a fresh, correctly filtered DB."""
+    if allowed is None:
+        return
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM petitions
+            WHERE txn_id IS NOT NULL AND txn_id <> ALL(%s)
+            """,
+            (sorted(allowed),),
+        )
+        petitions_deleted = cur.rowcount
+        # files shared by a kept petition survive; only fully-orphaned ones go.
+        cur.execute(
+            """
+            DELETE FROM files f
+            WHERE NOT EXISTS (SELECT 1 FROM petition_files pf
+                              WHERE pf.sha256 = f.sha256)
+            """
+        )
+        files_deleted = cur.rowcount
+    conn.commit()
+    log.info("purge: petitions deleted=%d, orphan files deleted=%d",
+             petitions_deleted, files_deleted)
+
+
 def run() -> dict:
     """Run the full index. Returns a small summary dict for CLI/display."""
     conn = connect()
     try:
         t0 = time.perf_counter()
-        _load_petitions_from_json(conn)
+        bound = _bound_txn_ids()
+        if bound is None:
+            allowed = None  # manifest unavailable -> unfiltered legacy behavior
+        else:
+            allowed = bound & _csv_txn_ids()
+            log.info("petitions restricted to bound ∩ CSV: %d", len(allowed))
+        _load_petitions_from_json(conn, allowed)
         txn_to_pid = _txn_to_petition_id(conn)
-        files_n, pages_n, pf_n = _load_files_from_csv(conn, txn_to_pid)
+        files_n, pages_n, pf_n, skipped = _load_files_from_csv(conn, txn_to_pid, allowed)
         _create_file_extracts(conn)
+        _purge_unbound(conn, allowed)
         summary = {
             "petitions_json": _count(conn, "petitions"),
             "files": _count(conn, "files"),
             "file_pages": _count(conn, "file_pages"),
             "file_extracts": _count(conn, "file_extracts"),
             "petition_files": _count(conn, "petition_files"),
+            "rows_skipped_unbound": skipped,
             "elapsed_s": round(time.perf_counter() - t0, 1),
         }
         log.info("index complete: %s", summary)

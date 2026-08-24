@@ -68,16 +68,81 @@ def status() -> None:
                         if "verdicts" in tables
                         else 0
                     )
-                    print(f"{db}: {len(tables)} tables, verdicts={n} rows")
+                    line = f"{db}: {len(tables)} tables, verdicts={n} rows"
+                    if "file_pages" in tables:
+                        # quality coverage + mean score + per-level counts
+                        avg, = c.execute(
+                            "SELECT round(avg(quality_score)::numeric, 2) FROM file_pages"
+                            " WHERE quality_score IS NOT NULL"
+                        ).fetchone() or (None,)
+                        scored, total, = c.execute(
+                            "SELECT count(*) FILTER (WHERE quality_score IS NOT NULL),"
+                            " count(*) FROM file_pages"
+                        ).fetchone()
+                        levels = dict(
+                            c.execute(
+                                "SELECT quality_level, count(*) FROM file_pages"
+                                " WHERE quality_level IS NOT NULL"
+                                " GROUP BY quality_level ORDER BY quality_level"
+                            ).fetchall()
+                        )
+                        lv = " ".join(f"{k}:{v}" for k, v in levels.items())
+                        line += (f" · quality {scored}/{total} scored"
+                                 + (f", avg {avg}" if avg is not None else "")
+                                 + (f" [{lv}]" if lv else ""))
+                    print(line)
             except psycopg.Error as e:
                 print(f"{db}: unreadable ({e})")
+
+
+def sync_quality(from_db: str) -> None:
+    """Copy file_pages.quality_* from `from_db` into the current MODEL_NAME's
+    database, joined on (sha256, page_no). Quality (DeQA-Doc) is model-
+    independent, so one run serves every model DB. Existing scores in the
+    target are never overwritten (COALESCE keeps them)."""
+    import json
+
+    target = config.DB_DSN
+    parts = urlsplit(target)
+    if from_db == parts.path.lstrip("/"):
+        raise SystemExit(f"--sync-quality: source ({from_db}) is the current database")
+    source = parts._replace(path=f"/{from_db}").geturl()
+
+    with psycopg.connect(source) as src, psycopg.connect(target) as dst:
+        cur = src.cursor()
+        cur.execute(
+            "SELECT sha256, page_no, quality_score, quality_level,"
+            " quality_probs::text, quality_model, quality_at"
+            " FROM file_pages WHERE quality_score IS NOT NULL"
+        )
+        rows = cur.fetchall()
+        with dst.cursor() as out:
+            out.executemany(
+                """
+                UPDATE file_pages SET
+                    quality_score = COALESCE(file_pages.quality_score, %s),
+                    quality_level = COALESCE(file_pages.quality_level, %s),
+                    quality_probs = COALESCE(file_pages.quality_probs, %s::jsonb),
+                    quality_model = COALESCE(file_pages.quality_model, %s),
+                    quality_at    = COALESCE(file_pages.quality_at, %s)
+                WHERE sha256 = %s AND page_no = %s
+                """,
+                [(r[2], r[3], r[4], r[5], r[6], r[0], r[1]) for r in rows],
+            )
+        dst.commit()
+    print(f"synced quality: {len(rows)} scored pages {from_db} -> "
+          f"{parts.path.lstrip('/')} (existing target scores kept)")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--status", action="store_true", help="list per-model databases")
+    ap.add_argument("--sync-quality", metavar="FROM_DB",
+                    help="copy quality scores from FROM_DB into the current model's db")
     args = ap.parse_args()
     if args.status:
         status()
+    elif args.sync_quality:
+        sync_quality(args.sync_quality)
     else:
         ensure_database()

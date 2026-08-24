@@ -23,6 +23,16 @@ AI_DONE = """(
 # Still-not-done: the negation of AI-done (the remaining backlog).
 STILL_NOT_DONE = f"NOT {AI_DONE}"
 
+# Errored: classification errored OR any extract page errored — the same
+# definition as the dashboard Errors card / the worker-log "Retry errored" count.
+ERRORED = """(
+    f.ai_class_status = 'error'
+    OR EXISTS (
+        SELECT 1 FROM file_extracts x
+        WHERE x.sha256 = f.sha256 AND x.ai_extract_status = 'error'
+    )
+)"""
+
 # Human-say-AI-wrong: any verdict on this file is 'wrong' (class or OCR).
 # 'wrong' is the single unified negative verdict for both stages.
 HUMAN_SAY_AI_WRONG = """EXISTS (
@@ -96,6 +106,7 @@ STATUS_FILTERS: dict[str, str] = {
     "human_done": HUMAN_DONE,
     "human_say_ai_wrong": HUMAN_SAY_AI_WRONG,
     "still_not_done": STILL_NOT_DONE,
+    "errored": ERRORED,
 }
 
 

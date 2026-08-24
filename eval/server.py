@@ -78,6 +78,7 @@ class WorkerControl:
         self.start_route = f"{base_route}/start"
         self.stop_route = f"{base_route}/stop"
         self.cont_route = f"{base_route}/continue"
+        self.clear_route = f"{base_route}/clear"
         self.lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
         self._reaper_started = False
@@ -141,6 +142,15 @@ class WorkerControl:
     def cont(self) -> str:
         # Continue = clear want_stop + re-spawn (pending rows resume automatically).
         return self.start()
+
+    def clear_log(self) -> str:
+        """Truncate the log file to 0 bytes. Safe while running: the worker's
+        stdout fd was opened O_APPEND, so new lines keep landing at the (new)
+        end of the file."""
+        with open(self.log_path, "wb"):
+            pass
+        log.info("%s log cleared (%s)", self.module, self.log_path)
+        return "cleared"
 
     def status(self) -> dict:
         with connect() as conn, conn.cursor() as cur:
@@ -563,6 +573,10 @@ class Handler(BaseHTTPRequestHandler):
             QWORKER.stop(); self._redirect("/worker-log")
         elif path == "/qrun/continue":
             QWORKER.cont(); self._redirect("/worker-log")
+        elif path == "/run/clear":
+            WORKER.clear_log(); self._redirect("/worker-log")
+        elif path == "/qrun/clear":
+            QWORKER.clear_log(); self._redirect("/worker-log")
         elif path == "/verdict":
             self._post_verdict()
         elif path == "/index":
@@ -617,8 +631,10 @@ class Handler(BaseHTTPRequestHandler):
         chips = [('<a class="filter %s" href="/?filter=">all petitions <span class="count">%d</span></a>'
                   % ("active" if not filt else "", c_all))]
         labels = {"ai_done": "AI-done", "human_done": "Human-done",
-                  "human_say_ai_wrong": "AI-wrong", "still_not_done": "Still-not-done"}
-        for name in ("ai_done", "human_done", "human_say_ai_wrong", "still_not_done"):
+                  "human_say_ai_wrong": "AI-wrong", "still_not_done": "Still-not-done",
+                  "errored": "Errored"}
+        for name in ("ai_done", "human_done", "human_say_ai_wrong", "still_not_done",
+                     "errored"):
             chips.append('<a class="filter %s" href="/?filter=%s">%s <span class="count">%d</span></a>'
                          % ("active" if filt == name else "", name, labels[name], chip_counts[name]))
         chips.append('<a class="filter" href="/review-queue">Needs review <span class="count">%d</span></a>'
@@ -698,6 +714,7 @@ class Handler(BaseHTTPRequestHandler):
             f"<form class='inline-form' method='post' action='{ctl.start_route}'><button class='run'>Start</button></form>"
             f"<form class='inline-form' method='post' action='{ctl.stop_route}'><button class='stop'>Stop</button></form>"
             f"<form class='inline-form' method='post' action='{ctl.cont_route}'><button>Continue</button></form>"
+            f"<form class='inline-form' method='post' action='{ctl.clear_route}'><button>Clear log</button></form>"
             "<span class='small'>|</span>"
             f"<span class='wdot wdot-{esc(st['state'])}'>worker {esc(st['state'])}</span>"
             f"<span class='small'>pending: <b>{esc(st['pending'])}</b> {esc(pending_label)}</span>"
@@ -1021,8 +1038,10 @@ class Handler(BaseHTTPRequestHandler):
         c_review_queue = _count_review_queue()
         chips = [('<a class="filter" href="/?filter=">all petitions <span class="count">%d</span></a>' % c_all)]
         labels = {"ai_done": "AI-done", "human_done": "Human-done",
-                  "human_say_ai_wrong": "AI-wrong", "still_not_done": "Still-not-done"}
-        for name in ("ai_done", "human_done", "human_say_ai_wrong", "still_not_done"):
+                  "human_say_ai_wrong": "AI-wrong", "still_not_done": "Still-not-done",
+                  "errored": "Errored"}
+        for name in ("ai_done", "human_done", "human_say_ai_wrong", "still_not_done",
+                     "errored"):
             chips.append('<a class="filter" href="/?filter=%s">%s <span class="count">%d</span></a>'
                          % (name, labels[name], chip_counts[name]))
         chips.append('<a class="filter active" href="/review-queue">Needs review <span class="count">%d</span></a>'

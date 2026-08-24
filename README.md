@@ -212,7 +212,7 @@ worker-log, score-detail, and review-queue pages and the review flow:
 
 | Command | What it does |
 |---|---|
-| `uv run switch_model.py` | ensure the current `MODEL_NAME`'s database exists + apply schema (idempotent); `--status` lists all model databases |
+| `uv run switch_model.py` | ensure the current `MODEL_NAME`'s database exists + apply schema (idempotent); `--status` lists all model databases; `--sync-quality FROM_DB` copies quality scores from another model's db |
 | `uv run eval-index` | apply schema + load CSV files + JSON petitions (idempotent) |
 | `uv run eval-worker` | run the AI worker once until no pending work / `want_stop` |
 | `uv run python -m eval.quality_worker` | run the quality-score worker once until no unscored pages / `quality_want_stop` |
@@ -233,13 +233,25 @@ database too. To evaluate a different model:
 # 1) edit MODEL_NAME in .env, then:
 uv run switch_model.py        # create the new model's db if missing + apply schema (idempotent)
 uv run eval-index             # index petitions/files into the fresh db
+uv run switch_model.py --sync-quality evalutea_qwen3_6_35b_a3b  # reuse existing quality scores
 uv run python -m eval.server  # run the worker/review against the new model
 ```
 
 `switch_model.py` never drops or recreates an existing database — re-running it
 for the current model only reapplies the schema (a no-op). Use
 `uv run switch_model.py --status` to list every `evalutea_*` database with its
-verdict count (per-model results stay frozen side by side). Two things are
+verdict count and quality-score coverage (per-model results stay frozen side by
+side). After indexing a fresh model db, copy the quality scores over from a
+model that already has them (quality is model-independent — one run serves
+every model db):
+
+```bash
+uv run switch_model.py --sync-quality evalutea_qwen3_6_35b_a3b
+# copies file_pages.quality_* joined on (sha256, page_no); existing target
+# scores are never overwritten (COALESCE keeps them)
+```
+
+Two things are
 shared across models, so a switch is cheaper than a fresh start: the page-PNG
 cache (`CACHE_DIR`, keyed by sha256 — no re-rendering) and the Postgres instance
 itself. Set `DB_DSN` explicitly in `.env` only to pin a database and ignore
